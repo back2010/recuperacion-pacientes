@@ -1,69 +1,43 @@
 # Recuperación de Pacientes · Inteligencia Operativa
 
-Código del Google Apps Script (web app + base en Google Sheets). Cada `push` a `main`
-sube automáticamente el contenido de `src/` a tu proyecto de Apps Script con
-[clasp](https://github.com/google/clasp) mediante GitHub Actions.
+Código del Google Apps Script. Cada cambio que se sube a `main` dentro de `src/` se copia
+solo a tu Apps Script (GitHub Actions + [clasp](https://github.com/google/clasp)).
 
-```
-src/
-  Code.gs           web app, sesión, permisos y endpoints
-  Datos.gs          estructura del Sheets, configuración, instalación, caché
-  Ingesta.gs        lectura del Excel de origen y consolidación
-  Vencimientos.gs   causa de vencimiento, reasignados, alerta diaria
-  Index.html        página principal
-  appsscript.json   manifiesto (zona horaria, Drive API v3, web app)
-  (faltan)          App.html, Estilos.html y el .gs con parseHist_, nrm_, auditarFolio_…
-```
+- **Subir a Apps Script** (`deploy.yml`): automático en cada push a `src/`.
+- **Traer desde Apps Script** (`traer.yml`): manual (Actions → Run workflow). Copia al repo
+  lo que hoy está en tu script, por ejemplo si editaste algo directo en el editor.
 
-## ⚠️ Antes del primer push automático
+## Conexión (una sola vez, todo en el navegador)
 
-`clasp push` **reemplaza** el proyecto completo: cualquier archivo que exista en Apps Script
-y no esté en `src/` se borra. Por eso el workflow se detiene si faltan `App.html`,
-`Estilos.html` o el archivo que define `parseHist_`, `nrm_`, `auditarFolio_`, `SYS_USER`,
-`REGLAS_VERSION`, `PROC_LBL` y `CAL_LBL`. La forma más segura de traerlos todos es
-`clasp pull` (paso 3).
-
-Revisa también `src/appsscript.json`: si tu proyecto ya tiene un manifiesto distinto
-(Configuración del proyecto → "Mostrar el archivo de manifiesto appsscript.json"),
-copia el tuyo encima de este.
-
-## Configuración (una sola vez)
-
-1. **Activa la API de Apps Script** en tu cuenta: https://script.google.com/home/usersettings
-2. **Instala clasp e inicia sesión** en tu computadora (Node 18+):
+1. Abre **Google Cloud Shell**: https://shell.cloud.google.com (con la misma cuenta de Google del script).
+2. Escribe y presiona Enter:
    ```bash
-   npm install -g @google/clasp@2.4.2
+   npx -y @google/clasp@3.4.1 login --no-localhost
    ```
+3. Abre el enlace que aparece, elige tu cuenta y acepta los permisos.
+   Al final el navegador muestra "No se puede acceder a este sitio": **es normal**.
+   Copia la dirección completa de esa página (empieza con `http://localhost:8888/?...`),
+   pégala en Cloud Shell y presiona Enter.
+4. Muestra tus credenciales y cópialas completas (de `{` a `}`):
    ```bash
-   clasp login
+   cat ~/.clasprc.json
    ```
-   Esto crea `~/.clasprc.json` con tus credenciales.
-3. **Trae los archivos faltantes** desde tu proyecto:
-   - Copia el ID del script (Apps Script → Configuración del proyecto → ID de la secuencia de comandos)
-     y ponlo en `.clasp.json`.
-   ```bash
-   git clone https://github.com/back2010/recuperacion-pacientes.git
-   ```
-   ```bash
-   cd recuperacion-pacientes && clasp pull
-   ```
-   ```bash
-   git add src && git commit -m "Archivos completos desde Apps Script" && git push
-   ```
-4. **Secretos del repo** (GitHub → Settings → Secrets and variables → Actions → New repository secret):
+5. En GitHub: este repo → **Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `CLASPRC_JSON`
+   - Secret: lo que copiaste.
+6. En GitHub: **Actions → Traer desde Apps Script → Run workflow**. Esto copia al repo los
+   archivos que faltan (App.html, Estilos.html, etc.).
 
-   | Secreto | Valor |
-   |---|---|
-   | `CLASPRC_JSON` | Contenido completo de `~/.clasprc.json` |
-   | `SCRIPT_ID` | ID del script |
-   | `DEPLOYMENT_ID` *(opcional)* | ID de la implementación web (Implementar → Gestionar implementaciones). Si lo pones, cada push actualiza también la URL `/exec`. |
+Esas credenciales dan acceso a tus proyectos de Apps Script: no las compartas ni las pegues en otro lugar.
 
-## Flujo de trabajo
+## Pruebas y producción
 
-- Edita en `src/` (aquí, en GitHub o con Claude) → `git push` → en ~1 min el código está en Apps Script.
-- **Pruebas:** usa la URL `/dev` (Implementar → Probar implementaciones); siempre muestra el último código subido.
-- **Producción:** con `DEPLOYMENT_ID`, la URL `/exec` también se actualiza en cada push.
-  Sin él, publica manualmente una nueva versión cuando quieras.
-- Si cambias algo directo en el editor de Apps Script, tráelo con `clasp pull` y haz commit;
-  si no, el siguiente push lo sobrescribe.
-- Puedes relanzar la subida manualmente en la pestaña **Actions → Subir a Apps Script → Run workflow**.
+- **Pruebas:** la URL `/dev` (Implementar → Probar implementaciones) siempre muestra el último código.
+- **Producción (`/exec`):** opcional. Agrega el secreto `DEPLOYMENT_ID` (Implementar → Gestionar
+  implementaciones → ID) y cada push también actualizará la URL publicada.
+
+## Importante
+
+Subir a Apps Script **reemplaza todo el proyecto** con lo que hay en `src/`. Si editas algo
+directo en el editor de Apps Script, corre primero "Traer desde Apps Script"; si no, se pierde
+en el siguiente push. Por seguridad, la subida se detiene si faltan archivos que el código necesita.

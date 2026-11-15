@@ -1,0 +1,40 @@
+name: Traer desde Apps Script
+
+# Copia al repo los archivos que hoy están en tu Apps Script (clasp pull).
+# Se ejecuta a mano: Actions → "Traer desde Apps Script" → Run workflow.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apps-script
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Instalar clasp
+        run: npm install -g @google/clasp@3.4.1
+      - name: Credenciales
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          [ -n "$CLASPRC_JSON" ] || { echo "::error::Falta el secreto CLASPRC_JSON"; exit 1; }
+          echo "$CLASPRC_JSON" > ~/.clasprc.json
+      - name: Traer archivos (clasp pull)
+        run: clasp pull
+      - name: Guardar en el repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A src
+          if git diff --cached --quiet; then echo "Sin cambios: el repo ya coincide con Apps Script."; exit 0; fi
+          git commit -m "Traer archivos desde Apps Script [skip ci]"
+          git push

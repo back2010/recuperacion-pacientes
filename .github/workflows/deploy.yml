@@ -37,17 +37,14 @@ jobs:
           node-version: 20
 
       - name: Instalar clasp
-        run: npm install -g @google/clasp@2.4.2
+        run: npm install -g @google/clasp@3.4.1
 
-      - name: Credenciales y proyecto
+      - name: Credenciales
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-          SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
         run: |
           [ -n "$CLASPRC_JSON" ] || { echo "::error::Falta el secreto CLASPRC_JSON"; exit 1; }
-          [ -n "$SCRIPT_ID" ] || { echo "::error::Falta el secreto SCRIPT_ID"; exit 1; }
           echo "$CLASPRC_JSON" > ~/.clasprc.json
-          printf '{"scriptId":"%s","rootDir":"src"}\n' "$SCRIPT_ID" > .clasp.json
 
       - name: Subir código (clasp push)
         run: clasp push -f
@@ -58,4 +55,4 @@ jobs:
         env:
           DEPLOYMENT_ID: ${{ secrets.DEPLOYMENT_ID }}
         if: env.DEPLOYMENT_ID != ''
-        run: clasp deploy -i "$DEPLOYMENT_ID" -d "GitHub ${GITHUB_SHA::7}"
+        run: clasp update-deployment "$DEPLOYMENT_ID" -d "GitHub ${GITHUB_SHA::7}"
