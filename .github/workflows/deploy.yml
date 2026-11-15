@@ -1,0 +1,61 @@
+name: Subir a Apps Script
+
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', '.github/workflows/deploy.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: apps-script
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # clasp push -f BORRA del proyecto los archivos que no estén en src/.
+      # Este paso impide subir si faltan archivos que el código necesita.
+      - name: Verificar que estén todos los archivos
+        run: |
+          falta=0
+          for f in src/App.html src/Estilos.html; do
+            [ -f "$f" ] || { echo "::error::Falta $f"; falta=1; }
+          done
+          for fn in parseHist_ nrm_ auditarFolio_; do
+            grep -rqE "function ${fn}\s*\(" src/ || { echo "::error::Ningún archivo de src/ define ${fn}()"; falta=1; }
+          done
+          for c in SYS_USER REGLAS_VERSION PROC_LBL CAL_LBL; do
+            grep -rqE "(const|let|var)\s+${c}\b" src/ || { echo "::error::Ningún archivo de src/ define ${c}"; falta=1; }
+          done
+          [ $falta -eq 0 ] || { echo "Agrega los archivos faltantes a src/ antes de subir (si no, se borrarían del proyecto)."; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar clasp
+        run: npm install -g @google/clasp@2.4.2
+
+      - name: Credenciales y proyecto
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
+        run: |
+          [ -n "$CLASPRC_JSON" ] || { echo "::error::Falta el secreto CLASPRC_JSON"; exit 1; }
+          [ -n "$SCRIPT_ID" ] || { echo "::error::Falta el secreto SCRIPT_ID"; exit 1; }
+          echo "$CLASPRC_JSON" > ~/.clasprc.json
+          printf '{"scriptId":"%s","rootDir":"src"}\n' "$SCRIPT_ID" > .clasp.json
+
+      - name: Subir código (clasp push)
+        run: clasp push -f
+
+      # Opcional: si defines el secreto DEPLOYMENT_ID, también se actualiza la URL /exec.
+      # Sin él, los cambios se ven en la URL de prueba /dev (Implementar → Probar implementaciones).
+      - name: Actualizar implementación web
+        env:
+          DEPLOYMENT_ID: ${{ secrets.DEPLOYMENT_ID }}
+        if: env.DEPLOYMENT_ID != ''
+        run: clasp deploy -i "$DEPLOYMENT_ID" -d "GitHub ${GITHUB_SHA::7}"
