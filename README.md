@@ -9,24 +9,32 @@ solo a tu Apps Script (GitHub Actions + [clasp](https://github.com/google/clasp)
 
 ## Conexión (una sola vez, todo en el navegador)
 
-1. Abre **Google Cloud Shell**: https://shell.cloud.google.com (con la misma cuenta de Google del script).
-2. Escribe y presiona Enter:
+El cliente OAuth público de clasp ya no funciona ("The OAuth client was not found"),
+así que se usa uno propio:
+
+1. **Proyecto de Google Cloud:** https://console.cloud.google.com/projectcreate → nombre `clasp-rp` → Crear.
+2. **Activar la API:** https://console.cloud.google.com/apis/library/script.googleapis.com → Habilitar.
+3. **Pantalla de consentimiento:** https://console.cloud.google.com/auth/overview → Comenzar.
+   Nombre `clasp-rp`, tu correo, público **Externo**, aceptar y Crear.
+   Luego en **Público** → Usuarios de prueba → agregar tu correo.
+4. **Cliente:** https://console.cloud.google.com/auth/clients → Crear cliente →
+   tipo **App de escritorio** → Crear → **Descargar JSON**.
+5. **Cloud Shell** (https://shell.cloud.google.com): menú ⋮ → Subir → elige el JSON. Después:
    ```bash
-   npx -y @google/clasp@3.4.1 login --no-localhost
+   mv ~/client_secret_*.json ~/creds.json
    ```
-3. Abre el enlace que aparece, elige tu cuenta y acepta los permisos.
-   Al final el navegador muestra "No se puede acceder a este sitio": **es normal**.
-   Copia la dirección completa de esa página (empieza con `http://localhost:8888/?...`),
-   pégala en Cloud Shell y presiona Enter.
-4. Muestra tus credenciales y cópialas completas (de `{` a `}`):
+   ```bash
+   npx -y @google/clasp@3.4.1 login --no-localhost --creds ~/creds.json
+   ```
+   Abre el enlace, autoriza ("Google no verificó esta app" → Avanzado → Ir a clasp-rp), y pega en la
+   terminal la dirección de la página final que no carga (`http://localhost:8888/?...code=...`).
+6. Copia la llave:
    ```bash
    cat ~/.clasprc.json
    ```
-5. En GitHub: este repo → **Settings → Secrets and variables → Actions → New repository secret**
-   - Name: `CLASPRC_JSON`
-   - Secret: lo que copiaste.
-6. En GitHub: **Actions → Traer desde Apps Script → Run workflow**. Esto copia al repo los
-   archivos que faltan (App.html, Estilos.html, etc.).
+7. GitHub → Settings → Secrets and variables → Actions → New repository secret:
+   `CLASPRC_JSON` = lo que copiaste.
+8. GitHub → Actions → **Traer desde Apps Script** → Run workflow (trae App.html y lo demás).
 
 Esas credenciales dan acceso a tus proyectos de Apps Script: no las compartas ni las pegues en otro lugar.
 
