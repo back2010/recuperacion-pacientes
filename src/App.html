@@ -617,12 +617,13 @@ function distCard(m) {
   const dl = d => d === 0 ? 'Mismo d\u00eda' : d === 1 ? '1 d\u00eda' : d + ' d\u00edas';
   const fila = (lbl, n, tot, k) => `<tr><td>${lbl}</td><td class="n"><b style="${k ? 'color:var(--bad)' : ''}">${fmtN(n)}</b></td><td class="n">${fmtP(ratio(n, tot), 0)}</td></tr>`;
   const tabla = (titulo, dist, max, abPl, abVen, abLbl) => {
-    const tot = dist.reduce((a, b) => a + b, 0), enT = dist.slice(0, max + 1).reduce((a, b) => a + b, 0);
+    const tot = dist.reduce((a, b) => a + b, 0) + abVen, enT = dist.slice(0, max + 1).reduce((a, b) => a + b, 0);
     return `<div><h3 style="margin:0 0 8px;font-size:14px">${titulo}</h3><table class="plain"><thead><tr><th>D\u00edas desde el registro</th><th class="n">Folios</th><th class="n">%</th></tr></thead><tbody>
       ${dist.slice(0, max + 1).map((n, d) => fila(dl(d), n, tot)).join('')}
       <tr><td><b>En tiempo (\u2264${max} d\u00edas)</b></td><td class="n"><b>${fmtN(enT)}</b></td><td class="n"><b>${fmtP(ratio(enT, tot), 0)}</b></td></tr>
       ${fila(`<b>Vencidos: ${max + 1} d\u00edas o m\u00e1s</b>`, dist[max + 1], tot, 'bad')}
-      <tr><td colspan="3" class="muted small">Adem\u00e1s, sin ${abLbl} todav\u00eda: ${fmtN(abPl)} a\u00fan a tiempo \u00b7 <b>${fmtN(abVen)} vencidos</b></td></tr></tbody></table></div>`;
+      ${fila(`<b>Vencidos: sin ${abLbl} todav\u00eda</b>`, abVen, tot, 'bad')}
+      <tr><td colspan="3" class="muted small">Sin ${abLbl} y a\u00fan a tiempo: ${fmtN(abPl)} (no cuentan en el %).</td></tr></tbody></table></div>`;
   };
   return `<div class="glass card" style="margin-bottom:20px"><h2>Conteo por d\u00edas</h2>
     <div class="grid g2">${tabla(`Aperturas: d\u00eda del primer comentario (meta \u2264${ap} d\u00edas)`, m.apDist, ap, m.apPl, m.apSinCom, 'comentario')}${tabla(`Cierres: d\u00eda del cierre (meta \u2264${ci} d\u00edas)`, m.cDist, ci, m.cPl, m.cAbVen, 'cerrar')}</div>
