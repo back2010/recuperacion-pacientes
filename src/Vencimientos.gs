@@ -5,8 +5,9 @@
  *  - Alerta diaria de folios vencidos por correo (ejecutiva, coordinador y administradores).
  *
  *  Reglas vigentes (nov-2026):
- *   · Apertura: sin primer comentario, el folio vence a las 48 h desde el registro (SLA_1ER_H).
- *   · Seguimiento/término: sin cerrar, vence a los 7 días naturales = 168 h desde el registro (CIERRE_DIAS).
+ *   Todo se cuenta por día de calendario (día del registro = día 0, hora de Mazatlán), no por horas.
+ *   · Apertura: sin primer comentario, el día 3 ya está vencida (APERTURA_DIAS = 2).
+ *   · Seguimiento/término: sin cerrar, el día 8 ya está vencido (CIERRE_DIAS = 7).
  */
 
 /* ---------------- Causa probable de vencimiento ---------------- */
@@ -118,10 +119,10 @@ function alertaDiariaVencidos(prueba) {
 /** Ejecuta la alerta enviando todos los correos solo a ti (para revisar cómo se ven). */
 function probarAlertaDiaria() { const r = alertaDiariaVencidos(true); Logger.log(JSON.stringify(r)); return r; }
 
-/** Folios abiertos hoy en APERTURA con más de 48 h o con más de 7 días sin cerrar (sin cierres automáticos ni reasignados). */
+/** Folios abiertos hoy en APERTURA sin comentario con más de 2 días o con más de 7 días sin cerrar (sin cierres automáticos ni reasignados). */
 function vencidosActuales_(cfg) {
-  const ahora = dateANaive_(new Date()) / 60000;
-  const limAp = Number(cfg.SLA_1ER_H) * 60, limC = Number(cfg.CIERRE_DIAS) * 1440;
+  const hoy = Math.floor(dateANaive_(new Date()) / 864e5);           // día de hoy (hora de Mazatlán)
+  const limAp = Number(cfg.APERTURA_DIAS), limC = Number(cfg.CIERRE_DIAS);
   const reas = leerReasignados_();
   const meses = mesesDisponibles_().slice(-(Number(cfg.ALERTA_MESES) || 3));
   const out = [];
@@ -134,8 +135,8 @@ function vencidosActuales_(cfg) {
       const est = s(r[2]);
       if (est === 'CIERRE' || est === 'CANCELADO' || (est === 'TERMINO' && cfg.TERMINO_COMO === 'cerrado')) return;
       const fReg = r[9]; if (fReg == null) return;
-      const trans = ahora - fReg;
-      // Reglas por estatus: APERTURA vence a las 48 h; sin cerrar, vence el día 8 (7 días desde el registro).
+      const trans = hoy - Math.floor(fReg / 1440);                    // días desde el día del registro
+      // Reglas por día: APERTURA sin comentario vence el día 3; sin cerrar, vence el día 8.
       // Un comentario (o la Fecha de primer seguimiento) ya es seguimiento aunque el estatus siga en APERTURA.
       const conComent = r[10] != null || r[11] != null;
       const enApertura = est === 'APERTURA' && !conComent;
@@ -143,8 +144,8 @@ function vencidosActuales_(cfg) {
       if (!cierreV && !apV) return;
       const cv = r[22] ? s(r[22][0]) : '';
       out.push({ folio: folio, ejec: s(r[1]) || '-', estatus: est, sucursal: s(r[4]), zona: s(r[3]), motivo: (r[15] || []).map(function (x) { return s(x[2]); }).filter(String).join(' · '),
-        registro: Utilities.formatDate(new Date(fReg * 60000), 'UTC', 'dd/MM/yyyy HH:mm'), dias: Math.floor(trans / 1440),
-        tipo: cierreV ? (enApertura ? 'Seguimiento vencido y sigue en APERTURA' : 'Seguimiento vencido (día ' + (Number(cfg.CIERRE_DIAS) + 1) + '+)') : 'En APERTURA sin comentario (+' + cfg.SLA_1ER_H + ' h)', causa: cierreV ? cv : '' });
+        registro: Utilities.formatDate(new Date(fReg * 60000), 'UTC', 'dd/MM/yyyy HH:mm'), dias: trans,
+        tipo: cierreV ? (enApertura ? 'Seguimiento vencido y sigue en APERTURA' : 'Seguimiento vencido (día ' + (Number(cfg.CIERRE_DIAS) + 1) + '+)') : 'En APERTURA sin comentario (día ' + (limAp + 1) + '+)', causa: cierreV ? cv : '' });
     });
   });
   out.sort(function (a, b) { return a.ejec.localeCompare(b.ejec) || b.dias - a.dias; });
@@ -166,7 +167,7 @@ function htmlCorreo_(intro, fs, conEjecutiva, url) {
   return '<div style="font-family:Arial;color:#1B2559"><p>' + esc(intro) + '</p>' + resumen +
     '<table style="border-collapse:collapse;font-family:Arial"><tr>' + (conEjecutiva ? '<th ' + th + '>Ejecutiva</th>' : '') + '<th ' + th + '>Folio</th><th ' + th + '>Registro</th><th ' + th + '>Días</th><th ' + th + '>Situación</th><th ' + th + '>Sucursal</th><th ' + th + '>Motivo</th><th ' + th + '>Causa probable</th></tr>' + filas + '</table>' +
     (fs.length > 400 ? '<p>… y ' + (fs.length - 400) + ' más. Consulta el dashboard.</p>' : '') +
-    '<p style="font-size:12px;color:#707EAE">Reglas: APERTURA = primer comentario en máximo 48 h desde el registro · seguimiento/término = máximo 7 días naturales desde el registro (el día 8 ya está vencido). No incluye cierres automáticos ni folios reasignados.' + (url ? ' <a href="' + url + '">Abrir dashboard</a>' : '') + '</p></div>';
+    '<p style="font-size:12px;color:#707EAE">Reglas: se cuenta por día, el día del registro es el día 0 · APERTURA = primer comentario a más tardar el día 2 (el día 3 ya está vencida) · seguimiento/término = cerrar a más tardar el día 7 (el día 8 ya está vencido). No incluye cierres automáticos ni folios reasignados.' + (url ? ' <a href="' + url + '">Abrir dashboard</a>' : '') + '</p></div>';
 }
 
 /** Reconstruye todos los meses (necesario una vez tras actualizar, para agregar la causa de vencimiento). */

@@ -31,7 +31,7 @@ function doGet(e) {
   return HtmlService.createTemplateFromFile('Index').evaluate()
     .setTitle('Inteligencia Operativa · Recuperación de Pacientes')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT); // solo con su propia liga: no se puede incrustar en otros sitios
 }
 
 /** Inserta otro archivo HTML del proyecto sin procesarlo como plantilla. */

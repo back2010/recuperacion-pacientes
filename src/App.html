@@ -82,7 +82,7 @@ const RECOM = {
   C5: 'Dejar evidencia de las acciones (capturas, comprobantes, folios de devoluci\u00f3n o ticket).',
   C6: 'Identificar y registrar la causa ra\u00edz (columna Causas o explicaci\u00f3n en la gesti\u00f3n).',
   C7: 'Explicar en la \u00faltima gesti\u00f3n por qu\u00e9 se resuelve as\u00ed y qu\u00e9 se ofreci\u00f3 al paciente.',
-  C8: 'Hacer el primer contacto dentro de 48 h y cerrar dentro de la meta de tiempo.',
+  C8: 'Hacer el primer contacto dentro de 2 d\u00edas y cerrar dentro de la meta de tiempo.',
   C9: 'Cerrar con clasificaci\u00f3n PROCEDE/NO PROCEDE y, si procede, registrar la acci\u00f3n correctiva.',
 };
 const ERROR_LBL = { C1: 'Informaci\u00f3n poco clara', C2: 'Motivo mal identificado', C3: 'Sin investigaci\u00f3n documentada', C4: 'Sin seguimiento documentado', C5: 'Sin evidencia de acciones', C6: 'Sin causa ra\u00edz', C7: 'Cierre sin justificaci\u00f3n', C8: 'Fuera de tiempo', C9: 'Cierre sin clasificaci\u00f3n clara' };
@@ -102,7 +102,7 @@ function observacion(a) {
 /* ---------- Configuraci\u00f3n (viene de la hoja Config) ---------- */
 function cfgDesdeServidor(c) {
   return {
-    slaFsH: +c.SLA_1ER_H, slaCH: +c.SLA_CIERRE_H, cierreDias: +c.CIERRE_DIAS || 7, tiempoRanking: '7D',
+    apDias: +c.APERTURA_DIAS || 2, slaCH: +c.SLA_CIERRE_H, cierreDias: +c.CIERRE_DIAS || 7, tiempoRanking: '7D',
     inicioCierre: 'registro', horario: 'naturales', semVerde: (+c.SEM_VERDE_PCT || 5) / 100, semAmarillo: (+c.SEM_AMARILLO_PCT || 15) / 100,
     diasHabiles: String(c.DIAS_HABILES).split(',').map(Number), horaIni: +c.HORA_INI, horaFin: +c.HORA_FIN,
     wP: +c.PESO_PROD, wR: +c.PESO_RES, wO: +c.PESO_OPO, prodVol: +c.PROD_VOL, minFolios: +c.MIN_FOLIOS, terminoComo: c.TERMINO_COMO === 'cerrado' ? 'cerrado' : 'abierto',
@@ -113,7 +113,7 @@ function cfgDesdeServidor(c) {
   };
 }
 const metaLbl = () => `\u2264${S.cfg.cierreDias} d\u00edas`;
-const apLbl = () => `\u2264${S.cfg.slaFsH} h`;
+const apLbl = () => `\u2264${S.cfg.apDias} d\u00edas`;
 
 /* ---------- Carga de datos por mes (desde la cach\u00e9 del servidor) ---------- */
 function clsOf(st) { switch (st) { case 'CIERRE': return 'cerrado'; case 'CANCELADO': return 'cancelado'; case 'SEGUIMIENTO': return 'seguimiento'; case 'APERTURA': return 'pendiente'; case 'TERMINO': return S.cfg.terminoComo === 'cerrado' ? 'cerrado' : 'termino'; default: return 'otro'; } }
@@ -186,18 +186,20 @@ function durH(a, b) {
   let t = 0; for (let d = dayStart(a); d <= b; d += D) { if (!c.diasHabiles.includes(dt(d).getUTCDay())) continue; const s = Math.max(a, d + c.horaIni * H), e = Math.min(b, d + c.horaFin * H); if (e > s) t += e - s; }
   return t / H;
 }
-/** Estados de tiempo por folio (desde la Fecha Registro, horas naturales):
- *  Apertura (48 h): termina con lo primero que ocurra: el primer comentario de una persona en el historial
+/** Estados de tiempo por folio. Todo se cuenta en DIAS NATURALES desde el dia de la Fecha Registro
+ *  (dia del registro = dia 0, hora de Mazatlan); las horas ya no deciden nada.
+ *  Apertura (<= apDias = 2): termina con lo primero que ocurra: el primer comentario de una persona en el historial
  *    o la Fecha de primer seguimiento. Aunque el estatus siga en APERTURA, un comentario ya es seguimiento.
- *    - Con Fecha de primer seguimiento (trae hora): <= 48 h = en tiempo.
- *    - Con comentario del historial (solo trae el dia): en tiempo si fue a mas tardar 2 dias despues del dia de registro.
- *    - Sin comentario ni fecha: en APERTURA hasta 48 h = aun a tiempo; despues = VENCIDA.
- *  Seguimiento (7 dias desde el registro): sin cerrar el dia 8 = VENCIDO; cerrado en <= 7 dias = en tiempo.
+ *    - Primer comentario a mas tardar el dia 2 = en tiempo; el dia 3 o despues = vencida (comentada tarde).
+ *    - Sin comentario: hasta el dia 2 = aun a tiempo; desde el dia 3 = VENCIDA.
+ *  Seguimiento (<= cierreDias = 7): cerrado a mas tardar el dia 7 = en tiempo; despues = cerrado tarde (vencido).
+ *    Sin cerrar el dia 8 = VENCIDO.
  *  Estados: cumple, fuera (atendido tarde), plazo (abierto, aun en tiempo), vencido (abierto y vencido),
  *           sd (sin fecha para saberlo; no cuenta como vencido). */
+const diasEntre = (a, b) => a == null || b == null ? null : Math.max(0, Math.round((dayStart(b) - dayStart(a)) / D));
 function computeSLA() {
   const c = S.cfg; S.cutoffMs = cutoff(); const now = c.corte === 'archivo' ? S.cutoffMs : nowNaive();
-  const lim = c.cierreDias * 24, apDias = Math.floor(c.slaFsH / 24);
+  const lim = c.cierreDias, apMax = c.apDias;
   for (const f of S.folios) {
     // Una Fecha de primer seguimiento anterior al registro es error de captura o de lectura: se ignora.
     const fsOk = f.fFs != null && f.fReg != null && f.fFs >= f.fReg - H;
@@ -205,27 +207,28 @@ function computeSLA() {
     f.fApertSrc = usaHist ? 'hist' : fsOk ? 'fs' : null;
     f.fApert = usaHist ? Math.max(f.fAp, f.fReg) : fsOk ? Math.max(f.fFs, f.fReg) : null;
     f.hFs = f.fApert != null ? durH(f.fReg, f.fApert) : null;
-    f.apDias = usaHist ? Math.max(0, Math.round((f.fAp - dayStart(f.fReg)) / D)) : null;
+    f.apDias = diasEntre(f.fReg, f.fApert);
     f.cStart = f.fReg; f.cStartSrc = 'registro';
     f.hC = f.fCierre != null ? durH(f.fReg, f.fCierre) : null;
+    f.cDias = diasEntre(f.fReg, f.fCierre);
     f.open = f.cls !== 'cerrado' && f.cls !== 'cancelado';
     f.elapsed = f.open ? durH(f.fReg, now) : null;
     f.elapsedReg = f.elapsed;
+    f.diasAbierto = f.open ? diasEntre(f.fReg, now) : null;
     // "Sigue en apertura" = estatus APERTURA y nadie ha comentado.
     f.enApertura = f.cls === 'pendiente' && f.fApert == null;
     if (f.cls === 'cancelado') { f.slaFs = f.slaC = f.slaC7 = 'na'; continue; }
-    if (f.fApertSrc === 'hist') f.slaFs = f.apDias <= apDias ? 'cumple' : 'fuera';
-    else if (f.fApertSrc === 'fs') f.slaFs = f.hFs <= c.slaFsH ? 'cumple' : 'fuera';
-    else if (f.enApertura) f.slaFs = f.elapsed > c.slaFsH ? 'vencido' : 'plazo';
-    else { const h = f.open ? f.elapsed : f.hC; f.slaFs = h != null && h <= c.slaFsH ? 'cumple' : 'sd'; }
-    if (f.cls === 'cerrado') f.slaC7 = f.hC == null ? 'sd' : f.hC <= lim ? 'cumple' : 'fuera';
-    else f.slaC7 = f.elapsed > lim ? 'vencido' : 'plazo';
+    if (f.apDias != null) f.slaFs = f.apDias <= apMax ? 'cumple' : 'fuera';
+    else if (f.enApertura) f.slaFs = f.diasAbierto > apMax ? 'vencido' : 'plazo';
+    else { const d = f.open ? f.diasAbierto : f.cDias; f.slaFs = d != null && d <= apMax ? 'cumple' : 'sd'; }
+    if (f.cls === 'cerrado') f.slaC7 = f.cDias == null ? 'sd' : f.cDias <= lim ? 'cumple' : 'fuera';
+    else f.slaC7 = f.diasAbierto > lim ? 'vencido' : 'plazo';
     f.slaC = f.slaC7;
   }
 }
 const slaMeta = f => f.slaC7;
 /** Foto "al día" de folios abiertos (todos los meses cargados, sin cierres automáticos ni reasignados):
- *  APERTURA en tiempo / vencida (48 h) y SEGUIMIENTO o TÉRMINO en tiempo / vencido (7 días). */
+ *  APERTURA en tiempo / vencida (2 días) y SEGUIMIENTO o TÉRMINO en tiempo / vencido (7 días). */
 function hoyVacio() { return { apPl: 0, apVen: 0, segPl: 0, segVen: 0, abiertos: 0 }; }
 function hoyPorEjecutiva(lista) {
   const out = new Map(); const set = lista ? new Set(lista) : null;
@@ -241,7 +244,7 @@ function hoyPorEjecutiva(lista) {
 /** Problemas de un folio (para la ficha de la ejecutiva y la consulta). */
 function problemas(f) {
   const p = [];
-  if (f.slaFs === 'fuera') p.push(['Primer comentario tarde (+48 h)', 'warn']); else if (f.slaFs === 'vencido') p.push(['Sin comentario en APERTURA (+48 h)', 'bad']);
+  if (f.slaFs === 'fuera') p.push(['Primer comentario tarde (d\u00eda ' + (S.cfg.apDias + 1) + '+)', 'warn']); else if (f.slaFs === 'vencido') p.push(['Sin comentario en APERTURA (d\u00eda ' + (S.cfg.apDias + 1) + '+)', 'bad']);
   if (f.slaC7 === 'fuera') p.push(['Cerrado tarde (+7 d\u00edas)', 'warn']); else if (f.slaC7 === 'vencido') p.push(['Seguimiento vencido (d\u00eda 8 o m\u00e1s sin cerrar)', 'bad']);
   if (f.aud) {
     if (f.aud.cal === 'I' || f.aud.cal === 'N') p.push([f.aud.cal === 'N' ? 'Gesti\u00f3n con informaci\u00f3n insuficiente' : 'Gesti\u00f3n inadecuada', 'bad']);
@@ -270,7 +273,8 @@ function closedIn(range, opt) { const bf = baseFilter(opt); return S.folios.filt
 /* ---------- Indicadores ---------- */
 function metrics(fs) {
   const m = { n: fs.length, regs: 0, cerr: 0, pend: 0, seg: 0, term: 0, canc: 0, otro: 0, proc: 0, noproc: 0, sindef: 0, sinclas: 0, encN: 0 };
-  const hfs = [], hc = []; const k = { fsOk: 0, fsBad: 0, fsVen: 0, fsPl: 0, fsSd: 0, cOk: 0, cBad: 0, cVen: 0, cPl: 0, cSd: 0, c7Ok: 0, c7Bad: 0, c7Ven: 0, c7Pl: 0, c7Sd: 0, atc: 0, ext: 0, auto: 0 };
+  const hfs = [], hc = [], cd = []; const apMax = S.cfg.apDias, cMax = S.cfg.cierreDias;
+  const apDist = Array(apMax + 2).fill(0), cDist = Array(cMax + 2).fill(0); const k = { fsOk: 0, fsBad: 0, fsVen: 0, fsPl: 0, fsSd: 0, cOk: 0, cBad: 0, cVen: 0, cPl: 0, cSd: 0, c7Ok: 0, c7Bad: 0, c7Ven: 0, c7Pl: 0, c7Sd: 0, atc: 0, ext: 0, auto: 0 };
   const inc = (pre, st) => { if (st === 'cumple') k[pre + 'Ok']++; else if (st === 'fuera') k[pre + 'Bad']++; else if (st === 'vencido') k[pre + 'Ven']++; else if (st === 'plazo') k[pre + 'Pl']++; else if (st === 'sd') k[pre + 'Sd']++; };
   const aud = { n: 0, A: 0, P: 0, I: 0, N: 0, crit: Array(9).fill(0), critP: Array(9).fill(0), score: [] };
   for (const f of fs) {
@@ -278,6 +282,8 @@ function metrics(fs) {
     if (f.cls === 'cerrado') m.cerr++; else if (f.cls === 'pendiente') m.pend++; else if (f.cls === 'seguimiento') m.seg++; else if (f.cls === 'termino') m.term++; else if (f.cls === 'cancelado') m.canc++; else m.otro++;
     for (const r of f.rows) { if (r.clasif === 'PROCEDE') m.proc++; else if (r.clasif === 'NO PROCEDE') m.noproc++; else if (r.clasif === 'SIN DEFINIR') m.sindef++; else m.sinclas++; }
     if (f.hFs != null) hfs.push(f.hFs); if (f.hC != null) hc.push(f.hC);
+    // Conteo por d\u00eda: en qu\u00e9 d\u00eda desde el registro fue el primer comentario y el cierre (\u00faltima casilla = vencidos)
+    if (f.cls !== 'cancelado') { if (f.apDias != null) apDist[Math.min(f.apDias, apMax + 1)]++; if (f.cls === 'cerrado' && f.cDias != null) { cDist[Math.min(f.cDias, cMax + 1)]++; cd.push(f.cDias); } }
     inc('fs', f.slaFs); inc('c', f.slaC); inc('c7', f.slaC7);
     if (f.atClin === 'SI') k.atc++; if (f.expTec === 'SI') k.ext++;
     if (f.aud) { aud.n++; aud[f.aud.cal]++; aud.score.push(f.aud.score); for (let i = 0; i < 9; i++) { if (f.aud.crit[i] === 'N') aud.crit[i]++; else if (f.aud.crit[i] === 'P') aud.critP[i]++; } }
@@ -296,8 +302,10 @@ function metrics(fs) {
   m.apOk = k.fsOk; m.apTarde = k.fsBad; m.apSinCom = k.fsVen; m.apVenc = k.fsBad + k.fsVen; m.apPl = k.fsPl;
   m.cOkT = k.c7Ok; m.cTarde = k.c7Bad; m.cAbVen = k.c7Ven; m.cVenc = k.c7Bad + k.c7Ven; m.cPl = k.c7Pl;
   m.pctVencAp = ratio(m.apVenc, m.apOk + m.apVenc); m.pctVencC = ratio(m.cVenc, m.cOkT + m.cVenc);
-  m.avgCd = m.avgC != null ? m.avgC / 24 : null; m.sdCd = hc.length > 1 ? sdev(hc) / 24 : null;
-  m.maxCd = hc.length ? Math.max(...hc) / 24 : null; m.minCd = hc.length ? Math.min(...hc) / 24 : null; m.medCd = m.medC != null ? m.medC / 24 : null;
+  // D\u00edas a cierre: se cuentan por d\u00eda de calendario (registro = d\u00eda 0), igual que la regla de 7 d\u00edas
+  m.avgCd = mean(cd); m.sdCd = cd.length > 1 ? sdev(cd) : null;
+  m.maxCd = cd.length ? Math.max(...cd) : null; m.minCd = cd.length ? Math.min(...cd) : null; m.medCd = median(cd);
+  m.apDist = apDist; m.cDist = cDist;
   m.apSd = k.fsSd; m.cSd = k.c7Sd;
   aud.pA = ratio(aud.A, aud.n); aud.pP = ratio(aud.P, aud.n); aud.pI = ratio(aud.I, aud.n); aud.pN = ratio(aud.N, aud.n); aud.avg = mean(aud.score);
   m.aud = aud;
@@ -367,11 +375,11 @@ function computeAlerts(cur, prev) {
     const push = (lvl, ind, dato, rec, tipo = 'Tiempos') => A.push({ lvl, ejec: m.ejec, coord: m.coord, ind, dato, rec, tipo });
     const enough = m.nivel === 'Alto' || m.nivel === 'Medio';
     if (enough && m.cumpT != null && medT != null) { const g = (medT - m.cumpT) * 100; if (g >= a.slaCritPP) push('critica', `Cumplimiento de cierre ${metaLbl()}`, `${fmtP(m.cumpT)} vs mediana del equipo ${fmtP(medT)} (\u2212${g.toFixed(1)} pp)`, 'Revisar con la ejecutiva los cierres fuera de tiempo; identificar si el retraso est\u00e1 en espera de cl\u00ednica o experto t\u00e9cnico y acordar cierre en bloques diarios.'); else if (g >= a.slaPrevPP) push('preventiva', `Cumplimiento de cierre ${metaLbl()}`, `${fmtP(m.cumpT)} vs mediana ${fmtP(medT)} (\u2212${g.toFixed(1)} pp)`, 'Monitorear cierres diarios y priorizar folios pr\u00f3ximos a vencer.'); }
-    if (enough && m.slaFs != null && medFs != null) { const g = (medFs - m.slaFs) * 100; if (g >= a.slaCritPP) push('critica', '1er comentario en 48 h', `${fmtP(m.slaFs)} vs mediana ${fmtP(medFs)} (\u2212${g.toFixed(1)} pp)`, 'Asegurar primer contacto el mismo d\u00eda de asignaci\u00f3n; revisar distribuci\u00f3n de carga y horario de llamadas.'); else if (g >= a.slaPrevPP) push('preventiva', '1er comentario en 48 h', `${fmtP(m.slaFs)} vs mediana ${fmtP(medFs)} (\u2212${g.toFixed(1)} pp)`, 'Reforzar el primer contacto dentro de las primeras 24 h.'); }
+    if (enough && m.slaFs != null && medFs != null) { const g = (medFs - m.slaFs) * 100; if (g >= a.slaCritPP) push('critica', '1er comentario en ' + S.cfg.apDias + ' d\u00edas', `${fmtP(m.slaFs)} vs mediana ${fmtP(medFs)} (\u2212${g.toFixed(1)} pp)`, 'Asegurar primer contacto el mismo d\u00eda de asignaci\u00f3n; revisar distribuci\u00f3n de carga y horario de llamadas.'); else if (g >= a.slaPrevPP) push('preventiva', '1er comentario en ' + S.cfg.apDias + ' d\u00edas', `${fmtP(m.slaFs)} vs mediana ${fmtP(medFs)} (\u2212${g.toFixed(1)} pp)`, 'Reforzar el primer contacto dentro de las primeras 24 h.'); }
     if (m.vencidos > 0) push('critica', 'Folios abiertos vencidos (+7 d\u00edas)', `${m.vencidos} folio(s) abiertos con m\u00e1s de ${S.cfg.cierreDias} d\u00edas desde el registro`, 'Ninguna ejecutiva debe tener folios vencidos: atenderlos hoy, cerrar los que ya tienen respuesta y escalar los que dependen de cl\u00ednica.');
     if (false && m.vencidos >= a.vencCrit) push('critica', 'Folios que contin\u00faan vencidos', `${m.vencidos} folios abiertos fuera de ${metaLbl()}`, 'Depurar la bandeja: revisar uno a uno los vencidos, cerrar los que ya tienen respuesta y escalar los que dependen de cl\u00ednica.'); else if (m.vencidos >= a.vencPrev) push('preventiva', 'Folios que contin\u00faan vencidos', `${m.vencidos} folios abiertos fuera de ${metaLbl()}`, 'Programar bloque de depuraci\u00f3n de pendientes.');
-    if (m.fsVen > 0) push('critica', 'Sin comentario en APERTURA (+48 h)', `${m.fsVen} folio(s) siguen en APERTURA sin comentario con m\u00e1s de ${S.cfg.slaFsH} h desde el registro`, 'Contactar hoy a estos pacientes; si la carga lo impide, redistribuir folios.');
-    if (false && m.fsVen >= a.sinSegCrit) push('critica', 'Sin primer comentario', `${m.fsVen} folios sin comentario y con m\u00e1s de ${S.cfg.slaFsH} h`, 'Contactar hoy a estos pacientes; si la carga lo impide, redistribuir folios.'); else if (m.fsVen >= a.sinSegPrev) push('preventiva', 'Sin primer comentario', `${m.fsVen} folios sin comentario vencidos`, 'Verificar folios sin contacto y registrar gesti\u00f3n.');
+    if (m.fsVen > 0) push('critica', 'Sin comentario en APERTURA (d\u00eda ' + (S.cfg.apDias + 1) + '+)', `${m.fsVen} folio(s) siguen en APERTURA sin comentario con m\u00e1s de ${S.cfg.apDias} d\u00edas desde el registro`, 'Contactar hoy a estos pacientes; si la carga lo impide, redistribuir folios.');
+    if (false && m.fsVen >= a.sinSegCrit) push('critica', 'Sin primer comentario', `${m.fsVen} folios sin comentario y con m\u00e1s de ${S.cfg.apDias} d\u00edas`, 'Contactar hoy a estos pacientes; si la carga lo impide, redistribuir folios.'); else if (m.fsVen >= a.sinSegPrev) push('preventiva', 'Sin primer comentario', `${m.fsVen} folios sin comentario vencidos`, 'Verificar folios sin contacto y registrar gesti\u00f3n.');
     if (enough && pv && mat) {
       if (m.avgC != null && p.avgC) { const inc = (m.avgC / p.avgC - 1) * 100; if (inc >= a.tcCrit) push('critica', 'Tiempo promedio de cierre', `${fmtH(m.avgC)} vs ${fmtH(p.avgC)} periodo anterior (+${inc.toFixed(0)}%)`, 'Analizar qu\u00e9 motivos o \u00e1reas alargan el cierre y acordar plan de reducci\u00f3n.'); else if (inc >= a.tcPrev) push('preventiva', 'Tiempo promedio de cierre', `${fmtH(m.avgC)} vs ${fmtH(p.avgC)} (+${inc.toFixed(0)}%)`, 'Dar seguimiento semanal al tiempo de cierre.'); }
       if (m.pctCierre != null && p.pctCierre != null) { const d = (p.pctCierre - m.pctCierre) * 100; if (d >= a.pcCrit) push('critica', '% de cierre', `${fmtP(m.pctCierre)} vs ${fmtP(p.pctCierre)} (\u2212${d.toFixed(1)} pp)`, 'Sesi\u00f3n de acompa\u00f1amiento: revisar casos abiertos y bloqueos para el cierre.'); else if (d >= a.pcPrev) push('preventiva', '% de cierre', `${fmtP(m.pctCierre)} vs ${fmtP(p.pctCierre)} (\u2212${d.toFixed(1)} pp)`, 'Revisar avance de cierres a mitad de periodo.'); }
@@ -532,7 +540,7 @@ function ring(p, lbl, cls = 'pri') { const v = p == null ? 0 : Math.max(0, Math.
 const PILL_IC = { ok: 'check_circle', bad: 'cancel', warn: 'error', info: 'schedule', n: 'radio_button_unchecked' };
 function pill(t, k = 'n') { return `<span class="pill p-${k}"><span class="ms">${PILL_IC[k] || PILL_IC.n}</span>${esc(t)}</span>`; }
 function tag(t, k = 'n') { return `<span class="pill tag p-${k}">${esc(t)}</span>`; }
-function slaPill(s, lbl = '48 h') { return ({ cumple: pill('En tiempo', 'ok'), fuera: pill('Tarde', 'warn'), vencido: pill('Vencido', 'bad'), plazo: pill('A\u00fan a tiempo', 'info'), sd: pill('Sin fecha', 'n'), na: pill('N/A') })[s] || ''; }
+function slaPill(s, lbl = '') { return ({ cumple: pill('En tiempo', 'ok'), fuera: pill('Tarde', 'warn'), vencido: pill('Vencido', 'bad'), plazo: pill('A\u00fan a tiempo', 'info'), sd: pill('Sin fecha', 'n'), na: pill('N/A') })[s] || ''; }
 function clsPill(c) { return pill(CLS_LBL[c] || c, { cerrado: 'ok', cancelado: 'n', seguimiento: 'info', pendiente: 'warn', termino: 'warn', otro: 'n' }[c]); }
 function calPill(c) { return c ? pill(CAL_LBL[c], CAL_CLS[c]) : '<span class="muted">No auditado</span>'; }
 function semaforo(v, verde, amarillo, inv = false) { if (v == null) return 'na'; return inv ? (v <= verde ? 'ok' : v <= amarillo ? 'warn' : 'bad') : (v >= verde ? 'ok' : v >= amarillo ? 'warn' : 'bad'); }
@@ -603,6 +611,23 @@ function pieCard(id, titulo, labels, data, colors, pies) {
   <div class="chart" style="height:200px">${chart(id, { type: 'doughnut', data: { labels, datasets: [{ data, backgroundColor: colors }] }, options: { plugins: { legend: { display: false } } } })}</div>
   <div class="glass" style="display:flex;justify-content:space-around;padding:14px 16px;margin-top:14px;box-shadow:0 18px 40px rgba(112,144,176,.12)">${pies.map(([l, v, c]) => `<div><div style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:var(--g600);margin-bottom:4px"><i style="width:8px;height:8px;border-radius:50%;background:${c}"></i>${l}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`).join('<i style="width:1px;background:var(--line)"></i>')}</div></div>`;
 }
+/** Conteo por d\u00eda: aperturas (d\u00eda del primer comentario) y cierres (d\u00eda del cierre), por separado. */
+function distCard(m) {
+  const ap = S.cfg.apDias, ci = S.cfg.cierreDias;
+  const dl = d => d === 0 ? 'Mismo d\u00eda' : d === 1 ? '1 d\u00eda' : d + ' d\u00edas';
+  const fila = (lbl, n, tot, k) => `<tr><td>${lbl}</td><td class="n"><b style="${k ? 'color:var(--bad)' : ''}">${fmtN(n)}</b></td><td class="n">${fmtP(ratio(n, tot), 0)}</td></tr>`;
+  const tabla = (titulo, dist, max, abPl, abVen, abLbl) => {
+    const tot = dist.reduce((a, b) => a + b, 0), enT = dist.slice(0, max + 1).reduce((a, b) => a + b, 0);
+    return `<div><h3 style="margin:0 0 8px;font-size:14px">${titulo}</h3><table class="plain"><thead><tr><th>D\u00edas desde el registro</th><th class="n">Folios</th><th class="n">%</th></tr></thead><tbody>
+      ${dist.slice(0, max + 1).map((n, d) => fila(dl(d), n, tot)).join('')}
+      <tr><td><b>En tiempo (\u2264${max} d\u00edas)</b></td><td class="n"><b>${fmtN(enT)}</b></td><td class="n"><b>${fmtP(ratio(enT, tot), 0)}</b></td></tr>
+      ${fila(`<b>Vencidos: ${max + 1} d\u00edas o m\u00e1s</b>`, dist[max + 1], tot, 'bad')}
+      <tr><td colspan="3" class="muted small">Adem\u00e1s, sin ${abLbl} todav\u00eda: ${fmtN(abPl)} a\u00fan a tiempo \u00b7 <b>${fmtN(abVen)} vencidos</b></td></tr></tbody></table></div>`;
+  };
+  return `<div class="glass card" style="margin-bottom:20px"><h2>Conteo por d\u00edas</h2>
+    <div class="grid g2">${tabla(`Aperturas: d\u00eda del primer comentario (meta \u2264${ap} d\u00edas)`, m.apDist, ap, m.apPl, m.apSinCom, 'comentario')}${tabla(`Cierres: d\u00eda del cierre (meta \u2264${ci} d\u00edas)`, m.cDist, ci, m.cPl, m.cAbVen, 'cerrar')}</div>
+    <div class="note">Se cuenta por d\u00eda de calendario, no por horas: el d\u00eda del registro es el d\u00eda 0. Ejemplo: registrado el lunes y comentado el mi\u00e9rcoles = 2 d\u00edas (en tiempo); el jueves = 3 d\u00edas (vencida).</div></div>`;
+}
 function vDashboard(el) {
   const r = curRange(), p = prevPeriod(r);
   const cur = cohort(r), m = metrics(cur), q = metricsPrev(p);
@@ -620,6 +645,7 @@ function vDashboard(el) {
     ${kpi('Seguimientos vencidos', fmtN(m.cVenc), `${fmtN(m.cTarde)} cerrados tarde \u00b7 ${fmtN(m.cAbVen)} siguen abiertos (d\u00eda 8+)`, m.cVenc ? 'bad' : 'ok')}
     ${kpi('Seguimientos a\u00fan a tiempo', fmtN(m.cPl), `abiertos dentro de ${S.cfg.cierreDias} d\u00edas desde el registro`, 'info')}
   </div>
+  ${distCard(m)}
   <div class="grid g2 dpair" style="margin-bottom:20px">
     <div class="glass hero" style="margin:0">
       <div class="hl"><span class="chipb"><span class="ms">calendar_today</span>${esc(r.tipo === 'semana' ? r.label.split(' (')[0] : r.label)}</span>
@@ -684,7 +710,7 @@ function vRanking(el) {
     { l: 'Abiertos vencidos', n: 1, v: m => m.vencidos ? `<span class="down">${fmtN(m.vencidos)}</span>` : '0', s: m => m.vencidos },
     { l: '% cumplimiento en tiempo', n: 1, v: m => sem(m.cumpT, .8, .6) + fmtP(m.cumpT), s: m => m.cumpT ?? -1 },
     { l: '% cierre', n: 1, v: m => sem(m.pctCierre, .85, .7) + fmtP(m.pctCierre), s: m => m.pctCierre ?? -1 },
-    { l: '1er com. \u226448 h', n: 1, v: m => fmtP(m.slaFs), s: m => m.slaFs ?? -1 },
+    { l: '1er com. \u2264' + S.cfg.apDias + ' d', n: 1, v: m => fmtP(m.slaFs), s: m => m.slaFs ?? -1 },
     { l: 'Gesti\u00f3n adecuada', n: 1, v: m => fmtP(m.aud.pA), s: m => m.aud.pA ?? -1 },
     { l: 'Desempe\u00f1o general', n: 1, v: m => `<b>${fmt1(m.score)}</b>`, s: m => m.score },
     ...(tab === 'mejora' ? [{ l: 'Dimensi\u00f3n m\u00e1s d\u00e9bil', v: m => tag(weak(m), 'warn') }] : [])], list, { click: m => go('individual', { ejec: m.ejec }) })}
@@ -695,7 +721,7 @@ function vRanking(el) {
 function coordNombre(correo) { const c = S.ses.coordinadores.find(x => x.correo === correo); return c ? c.nombre : correo || 'Sin coordinador'; }
 function exportRanking() {
   const r = curRange(); const L = execStats(r).sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
-  const rows = [['Ejecutiva', 'Coordinador', 'Asignados', 'Cerrados', 'Cerrados en tiempo', 'Cerrados fuera de tiempo', 'Abiertos a\u00fan a tiempo', 'Abiertos vencidos', '% cumplimiento en tiempo', '% cierre', '1er comentario \u226448 h', 'Cierre \u226448 h', 'Cierre \u2264' + S.cfg.cierreDias + ' d\u00edas', 'Gesti\u00f3n adecuada %', 'Productividad', 'Resoluci\u00f3n', 'Oportunidad', 'Desempe\u00f1o general', 'Nivel de informaci\u00f3n']];
+  const rows = [['Ejecutiva', 'Coordinador', 'Asignados', 'Cerrados', 'Cerrados en tiempo', 'Cerrados fuera de tiempo', 'Abiertos a\u00fan a tiempo', 'Abiertos vencidos', '% cumplimiento en tiempo', '% cierre', '1er comentario \u2264' + S.cfg.apDias + ' d\u00edas', 'Cierre \u226448 h', 'Cierre \u2264' + S.cfg.cierreDias + ' d\u00edas', 'Gesti\u00f3n adecuada %', 'Productividad', 'Resoluci\u00f3n', 'Oportunidad', 'Desempe\u00f1o general', 'Nivel de informaci\u00f3n']];
   for (const m of L) rows.push([m.ejec, coordNombre(m.coord), m.asign, m.cerr, m.cerrEnT, m.cerrFuera, m.pendPlazo, m.vencidos, m.cumpT, m.pctCierre, m.slaFs, m.slaC, m.slaC7, m.aud.pA, m.sP, m.sR, m.sO, m.score, m.nivel]);
   xlsxDescarga([['Ranking', rows]], `Ranking_${fname(r.label)}.xlsx`);
 }
@@ -717,7 +743,7 @@ function vCoord(el) {
     <div class="mini"><span>Siguen vencidos <b class="${x.m.vencidos ? 'down' : ''}">${fmtN(x.m.vencidos)}</b></span><span>Alertas cr\u00edticas <b class="${x.alertas ? 'down' : ''}">${x.alertas}</b></span></div>
     <div class="mini"><span>Mejor: <b>${esc(x.mejor?.ejec.split(' ').slice(0, 2).join(' ') || '\u2014')}</b></span><span>Atender: <b>${esc(x.peor?.ejec.split(' ').slice(0, 2).join(' ') || '\u2014')}</b></span></div>
     <button class="btn sm" onclick="S.flt.coord='${esc(x.c.correo)}';saveFlt();renderFilters();go('ranking')">Ver ranking del equipo</button></div>`).join('')}</div>
-  ${rows.length > 1 ? `<div class="glass card" style="margin-top:16px"><h2>Comparativo de equipos</h2><div class="chart">${chart('cCo', { type: 'bar', data: { labels: rows.map(x => x.c.nombre), datasets: [['% cierre', x => x.m.pctCierre], ['Cumplimiento en tiempo', x => x.m.cumpT], ['1er comentario \u226448 h', x => x.m.slaFs], ['Gesti\u00f3n adecuada', x => x.m.aud.pA]].map(([l, fn], i) => ({ label: l, data: rows.map(x => fn(x) != null ? +(fn(x) * 100).toFixed(1) : null), backgroundColor: PAL[i], borderRadius: 4 })) }, options: { scales: { y: pctAxis } } })}</div></div>` : ''}
+  ${rows.length > 1 ? `<div class="glass card" style="margin-top:16px"><h2>Comparativo de equipos</h2><div class="chart">${chart('cCo', { type: 'bar', data: { labels: rows.map(x => x.c.nombre), datasets: [['% cierre', x => x.m.pctCierre], ['Cumplimiento en tiempo', x => x.m.cumpT], ['1er comentario \u2264' + S.cfg.apDias + ' d\u00edas', x => x.m.slaFs], ['Gesti\u00f3n adecuada', x => x.m.aud.pA]].map(([l, fn], i) => ({ label: l, data: rows.map(x => fn(x) != null ? +(fn(x) * 100).toFixed(1) : null), backgroundColor: PAL[i], borderRadius: 4 })) }, options: { scales: { y: pctAxis } } })}</div></div>` : ''}
   <div class="glass card" style="margin-top:16px"><h2>Detalle por equipo</h2>${table([{ l: 'Coordinador', v: x => `<b>${esc(x.c.nombre)}</b><br><span class="muted">${esc(x.c.correo)}</span>` }, { l: 'Ejecutivas', n: 1, v: x => x.c.ejecutivas.length }, { l: 'Folios', n: 1, v: x => fmtN(x.m.n), s: x => x.m.n }, { l: 'Cerrados', n: 1, v: x => fmtN(x.m.cerr), s: x => x.m.cerr }, { l: 'En tiempo', n: 1, v: x => fmtN(x.m.cerrEnT), s: x => x.m.cerrEnT }, { l: 'Fuera de tiempo', n: 1, v: x => fmtN(x.m.cerrFuera), s: x => x.m.cerrFuera }, { l: 'Abiertos vencidos', n: 1, v: x => fmtN(x.m.vencidos), s: x => x.m.vencidos }, { l: '% cumplimiento', n: 1, v: x => fmtP(x.m.cumpT), s: x => x.m.cumpT ?? -1 }, { l: '% cierre', n: 1, v: x => fmtP(x.m.pctCierre), s: x => x.m.pctCierre ?? -1 }, { l: 'Gesti\u00f3n adecuada', n: 1, v: x => fmtP(x.m.aud.pA), s: x => x.m.aud.pA ?? -1 }, { l: 'Desempe\u00f1o prom.', n: 1, v: x => fmt1(x.score), s: x => x.score ?? -1 }], rows)}</div>`;
 }
 
@@ -808,7 +834,7 @@ function vIndividual(el) {
    ${kpi('Apertura ' + apLbl(), fmtP(m.slaFs), delta(m.slaFs, pm?.slaFs, { pct: true }), semaforo(m.slaFs, .8, .6))}
    ${kpi('Aperturas vencidas', fmtN(m.apVenc), `${fmtN(m.apTarde)} comentadas tarde \u00b7 ${fmtN(m.apSinCom)} sin comentario`, m.apVenc ? 'bad' : 'ok')}
    ${kpi('Seguimientos vencidos', fmtN(m.cVenc), `${fmtN(m.cTarde)} cerrados tarde \u00b7 ${fmtN(m.cAbVen)} abiertos (d\u00eda 8+)`, m.cVenc ? 'bad' : 'ok')}
-   ${(() => { const h = hoyPorEjecutiva([e]).get(e) || hoyVacio(); return kpi('Al d\u00eda: en APERTURA', `${fmtN(h.apPl)} / ${fmtN(h.apVen)}`, `en tiempo / vencidas (+${S.cfg.slaFsH} h)`, h.apVen ? 'bad' : 'ok') + kpi('Al d\u00eda: en seguimiento o t\u00e9rmino', `${fmtN(h.segPl)} / ${fmtN(h.segVen)}`, `en tiempo / vencidas (d\u00eda ${S.cfg.cierreDias + 1}+)`, h.segVen ? 'bad' : 'ok'); })()}
+   ${(() => { const h = hoyPorEjecutiva([e]).get(e) || hoyVacio(); return kpi('Al d\u00eda: en APERTURA', `${fmtN(h.apPl)} / ${fmtN(h.apVen)}`, `en tiempo / vencidas (d\u00eda ${S.cfg.apDias + 1}+)`, h.apVen ? 'bad' : 'ok') + kpi('Al d\u00eda: en seguimiento o t\u00e9rmino', `${fmtN(h.segPl)} / ${fmtN(h.segVen)}`, `en tiempo / vencidas (d\u00eda ${S.cfg.cierreDias + 1}+)`, h.segVen ? 'bad' : 'ok'); })()}
    ${kpi('Desv. est\u00e1ndar d\u00edas a cierre', m.sdCd != null ? '\u00b1' + m.sdCd.toFixed(1) + ' d\u00edas' : '\u2014', `promedio ${m.avgCd != null ? m.avgCd.toFixed(1) : '\u2014'} \u00b7 m\u00e1ximo ${m.maxCd != null ? m.maxCd.toFixed(1) : '\u2014'} d\u00edas`)}
    ${kpi('Folios atendidos por d\u00eda', m.cargaProm != null ? m.cargaProm.toFixed(1) : '\u2014', `desv. est\u00e1ndar ${m.cargaSd != null ? m.cargaSd.toFixed(1) : '\u2014'} \u00b7 ${fmtN(m.diasActivos)} d\u00edas con gesti\u00f3n`)}
    ${kpi('Prom. cierre', fmtH(m.avgC), delta(m.avgC, pm?.avgC, { inv: true, unit: 'h' }))}
@@ -838,7 +864,7 @@ function vIndividual(el) {
 function recomendaciones(m, errores) {
   const out = [];
   if (m.vencidos) out.push(`Depurar ${m.vencidos} folio(s) que siguen vencidos: cerrar los que ya tienen respuesta y escalar los que dependen de cl\u00ednica o experto t\u00e9cnico.`);
-  if (m.fsVen) out.push(`Atender hoy ${m.fsVen} folio(s) que siguen en APERTURA sin comentario con m\u00e1s de 48 h.`);
+  if (m.fsVen) out.push(`Atender hoy ${m.fsVen} folio(s) que siguen en APERTURA sin comentario con m\u00e1s de ${S.cfg.apDias} d\u00edas.`);
   if (m.cumpT != null && m.cumpT < 0.8) out.push(`Cumplimiento en tiempo de ${fmtP(m.cumpT)}: priorizar diariamente los folios m\u00e1s pr\u00f3ximos a vencer (${metaLbl()}).`);
   errores.filter(x => x.p >= 0.15).slice(0, 3).forEach(x => out.push(`${x.lbl} en ${fmtP(x.p, 0)} de sus folios auditados: ${RECOM[x.id]}`));
   if (m.aud.n && (m.aud.I + m.aud.N) / m.aud.n >= 0.2) out.push('Revisar juntas 5 folios con gesti\u00f3n inadecuada y acordar el est\u00e1ndar m\u00ednimo de registro.');
@@ -866,7 +892,7 @@ function folioProblemCard(fs) {
   return `<div class="glass card" style="margin-top:16px"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">Sus folios del periodo</h2><span class="sp"></span><button class="btn sm noprint" id="xl_fpc">Exportar a Excel</button></div>
   <div class="tabs noprint">${tabs.map(([k, l, n]) => `<button data-fpc="${k}" class="${st === k ? 'on' : ''}">${l} (${fmtN(n)})</button>`).join('')}</div>
   ${table([{ l: 'Folio', v: f => `<b>${esc(f.folio)}</b>`, s: f => f.folio }, { l: 'Registro', v: f => fmtDT(f.fReg), s: f => f.fReg }, { l: 'Estatus', v: f => clsPill(f.cls), s: f => f.cls }, { l: 'Sucursal', v: f => esc(f.sucursal) }, { l: 'Motivo(s)', v: f => esc(f.motivos.join(' \u00b7 ')) },
-    { l: 'Apertura', v: f => slaPill(f.slaFs, apLbl()) + ' ' + nw(fsTxt(f)), s: f => f.hFs ?? f.elapsed ?? -1 }, { l: 'Cierre', v: f => slaPill(f.slaC7, metaLbl()) + ' ' + nw(fmtH(f.hC ?? f.elapsed)), s: f => f.hC ?? f.elapsed ?? -1 },
+    { l: 'Apertura', v: f => slaPill(f.slaFs, apLbl()) + ' ' + nw(fsTxt(f)), s: f => f.apDias ?? f.diasAbierto ?? -1 }, { l: 'Cierre', v: f => slaPill(f.slaC7, metaLbl()) + ' ' + nw(diasTxt(f.cDias ?? f.diasAbierto)), s: f => f.cDias ?? f.diasAbierto ?? -1 },
     { l: 'Problemas', v: f => problemas(f).map(([t, k]) => tag(t, k)).join(' ') || tag('Sin problemas', 'ok'), s: f => problemas(f).length },
     { l: 'Causa probable del vencimiento', v: f => (f.slaC7 === 'vencido' || f.slaC7 === 'fuera') && f.cv ? `<span class="obs">${esc(f.cv)}</span>` : '<span class="muted">\u2014</span>', s: f => f.cv || '' }],
     list.slice(0, 1500), { click: f => abrirFolio(f.folio), max: 560 })}
@@ -900,7 +926,7 @@ function resumenEjecutivasHtml(r) {
     { l: 'Desv. estándar', n: 1, v: x => x.m.sdCd != null ? '±' + x.m.sdCd.toFixed(1) : '—', s: x => x.m.sdCd ?? -1 },
     { l: 'Máximo', n: 1, v: x => x.m.maxCd != null ? `<b>${x.m.maxCd.toFixed(1)}</b>` : '—', s: x => x.m.maxCd ?? -1 },
   ], L, { click: x => go('individual', { ejec: x.m.ejec }), max: 520 })}
-  <div class="note"><b>Apertura en tiempo</b>: primer comentario o paso a SEGUIMIENTO en \u2264${S.cfg.slaFsH} h. <b>Apertura vencidas</b>: comentadas tarde o siguen en APERTURA sin comentario con m\u00e1s de ${S.cfg.slaFsH} h. <b>Seguimiento en tiempo</b>: cerradas en ≤${S.cfg.cierreDias} días. <b>Seguimiento vencidos</b>: cerradas tarde o siguen abiertas el día ${S.cfg.cierreDias + 1} o después. <b>Desviación estándar</b>: cuánto se alejan sus cierres del promedio (ej. promedio 5 ± 3 días = la mayoría cierra entre 2 y 8 días); <b>máximo</b> = su cierre más tardado. Clic en una fila para ver la ficha de la ejecutiva.</div></div>`;
+  <div class="note"><b>Apertura en tiempo</b>: primer comentario o paso a SEGUIMIENTO a m\u00e1s tardar el d\u00eda ${S.cfg.apDias} desde el registro. <b>Apertura vencidas</b>: comentadas el d\u00eda ${S.cfg.apDias + 1} o despu\u00e9s, o siguen en APERTURA sin comentario. <b>Seguimiento en tiempo</b>: cerradas en ≤${S.cfg.cierreDias} días. <b>Seguimiento vencidos</b>: cerradas tarde o siguen abiertas el día ${S.cfg.cierreDias + 1} o después. <b>Desviación estándar</b>: cuánto se alejan sus cierres del promedio (ej. promedio 5 ± 3 días = la mayoría cierra entre 2 y 8 días); <b>máximo</b> = su cierre más tardado. Clic en una fila para ver la ficha de la ejecutiva.</div></div>`;
 }
 function resumenEjecutivasFilas(r) {
   const rows = [['Ejecutiva', 'Quejas', 'Apertura en tiempo', 'Apertura vencidas', 'Seguimiento en tiempo', 'Seguimiento vencidos', 'Hoy APERTURA en tiempo', 'Hoy APERTURA vencidas', 'Hoy seguimiento/término en tiempo', 'Hoy seguimiento/término vencidos', 'Días a cierre promedio', 'Desviación estándar días', 'Días a cierre máximo', 'Días a cierre mínimo', 'Mediana días']];
@@ -933,11 +959,11 @@ function vVencimientos(el) {
   const reas = S.folios.filter(f => f.reasig && inR(f.fReg, r) && geoOk(f) && (!S.flt.ejec || f.owner === S.flt.ejec));
   const hayReasCfg = Object.keys(S.ses.reasignados || {}).length > 0;
   el.innerHTML = `${header('Vencimientos (aperturas y cierres)', `${esc(r.label)} \u00b7 cohorte por Fecha Registro \u00b7 sin cierres autom\u00e1ticos ni reasignados`, `<button class="btn" id="vXl"><span class="ms">download</span>Exportar ranking</button>`)}
-  <div class="banner info glass compact"><b>Reglas:</b> <b>Apertura</b>: hay <b>${S.cfg.slaFsH} h</b> desde el registro para el primer comentario (o el paso a SEGUIMIENTO); un comentario ya es seguimiento aunque el estatus siga en APERTURA. Sin comentario pasadas las ${S.cfg.slaFsH} h = <b>vencido</b>. <b>Seguimiento</b>: en SEGUIMIENTO o TÉRMINO tiene <b>${S.cfg.cierreDias} días</b> desde el registro; si el día ${S.cfg.cierreDias + 1} sigue sin cerrar está <b>vencido</b>. "Al día" = folios abiertos hoy.</div>
+  <div class="banner info glass compact"><b>Reglas:</b> <b>Apertura</b>: hay <b>${S.cfg.apDias} d\u00edas</b> desde el d\u00eda de registro para el primer comentario (o el paso a SEGUIMIENTO); un comentario ya es seguimiento aunque el estatus siga en APERTURA. Sin comentario el d\u00eda ${S.cfg.apDias + 1} = <b>vencido</b>. Se cuenta en d\u00edas, no en horas. <b>Seguimiento</b>: en SEGUIMIENTO o TÉRMINO tiene <b>${S.cfg.cierreDias} días</b> desde el registro; si el día ${S.cfg.cierreDias + 1} sigue sin cerrar está <b>vencido</b>. "Al día" = folios abiertos hoy.</div>
   ${resumenEjecutivasHtml(r)}
   <div class="glass card" style="margin-bottom:20px"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">Folios vencidos pendientes hoy</h2>${tag(fmtN(pendHoy.length) + ' folios', pendHoy.length ? 'bad' : 'ok')}<span class="sp"></span><span class="muted small">Meta: ninguna ejecutiva con folios vencidos \u00b7 tambi\u00e9n llegan por correo cada ma\u00f1ana</span></div>
   ${pendHoy.length ? table([{ l: 'Ejecutiva', v: f => `<b>${esc(f.owner)}</b>`, s: f => f.owner }, { l: 'Folio', v: f => esc(f.folio), s: f => f.folio }, { l: 'Registro', v: f => fmtDT(f.fReg), s: f => f.fReg }, { l: 'D\u00edas', n: 1, v: f => `<span class="down">${Math.floor(f.elapsed / 24)}</span>`, s: f => f.elapsed },
-    { l: 'Situaci\u00f3n', v: f => f.slaC7 === 'vencido' ? tag(f.enApertura ? 'Seguimiento vencido y sigue en APERTURA' : 'Seguimiento vencido (d\u00eda ' + (S.cfg.cierreDias + 1) + '+)', 'bad') : tag('En APERTURA m\u00e1s de ' + S.cfg.slaFsH + ' h', 'warn'), s: f => f.slaC7 }, { l: 'Sucursal', v: f => esc(f.sucursal) }, { l: 'Motivo', v: f => esc(f.motivos.join(' \u00b7 ')) },
+    { l: 'Situaci\u00f3n', v: f => f.slaC7 === 'vencido' ? tag(f.enApertura ? 'Seguimiento vencido y sigue en APERTURA' : 'Seguimiento vencido (d\u00eda ' + (S.cfg.cierreDias + 1) + '+)', 'bad') : tag('En APERTURA m\u00e1s de ' + S.cfg.apDias + ' d\u00edas', 'warn'), s: f => f.slaC7 }, { l: 'Sucursal', v: f => esc(f.sucursal) }, { l: 'Motivo', v: f => esc(f.motivos.join(' \u00b7 ')) },
     { l: 'Causa probable', v: f => f.slaC7 === 'vencido' && f.cv ? `<b>${esc(f.cv)}</b><span class="obs">${esc(f.cvEvid || '')}</span>` : '<span class="muted">\u2014</span>', s: f => f.cv || '' }], pendHoy.slice(0, 1500), { click: f => abrirFolio(f.folio), max: 420 }) : '<div class="muted">Sin folios vencidos pendientes. \u2714</div>'}</div>
   <div class="tabs"><button data-vt="cierre" class="${tab === 'cierre' ? 'on' : ''}">Ranking de cierres (${metaLbl()})</button><button data-vt="apertura" class="${tab === 'apertura' ? 'on' : ''}">Ranking de aperturas (${apLbl()})</button></div>
   <div class="kpis">${kpi('Ejecutivas en verde', fmtN(nSem('ok')), `\u2264${fmtP(S.cfg.semVerde, 0)} vencidos y sin pendientes vencidos`, 'ok')}${kpi('Ejecutivas en amarillo', fmtN(nSem('warn')), `hasta ${fmtP(S.cfg.semAmarillo, 0)} vencidos`, 'warn')}${kpi('Ejecutivas en rojo', fmtN(nSem('bad')), `m\u00e1s de ${fmtP(S.cfg.semAmarillo, 0)} vencidos`, nSem('bad') ? 'bad' : 'ok')}</div>
@@ -1005,13 +1031,14 @@ function vFolios(el) {
 }
 const canalKey = f => f.encuesta ? (f.auto ? 'Encuesta \u00b7 autom\u00e1tico' : 'Encuesta \u00b7 manual') : 'Otros medios';
 function canalPill(f) { return f.encuesta ? (f.auto ? pill('Encuesta \u00b7 auto') : pill('Encuesta \u00b7 manual', 'info')) : pill('Otros medios', 'ok'); }
-function fsTxt(f) { if (f.enApertura) return fmtH(f.elapsedReg) + ' en APERTURA sin comentario'; if (f.fApertSrc === 'hist') return 'comentario ' + (f.apDias === 0 ? 'el mismo d\u00eda' : `al d\u00eda ${f.apDias}`); if (f.hFs != null) return fmtH(f.hFs) + (f.fApertSrc === 'hist' ? ' (1er comentario)' : ''); return 'sin fecha'; }
+function diasTxt(d) { return d == null ? '\u2014' : d === 0 ? 'mismo d\u00eda' : d === 1 ? '1 d\u00eda' : d + ' d\u00edas'; }
+function fsTxt(f) { if (f.enApertura) return diasTxt(f.diasAbierto) + ' en APERTURA sin comentario'; if (f.apDias != null) return '1er comentario ' + (f.apDias === 0 ? 'el mismo d\u00eda' : `al d\u00eda ${f.apDias}`); return 'sin fecha'; }
 function folioTable(fs, max = 520) {
   return table([{ l: 'Folio', v: f => `<b>${esc(f.folio)}</b>`, s: f => f.folio }, { l: 'Registro', v: f => fmtDT(f.fReg), s: f => f.fReg }, { l: 'Estatus', v: f => clsPill(f.cls), s: f => f.cls }, { l: 'Canal', v: f => canalPill(f), s: f => canalKey(f) }, { l: 'Sucursal', v: f => esc(f.sucursal) }, { l: 'Motivo(s)', v: f => esc(f.motivos.join(' \u00b7 ')) }, { l: 'Apertura (registro \u2192 1er comentario)', v: f => slaPill(f.slaFs, apLbl()) + ' ' + nw(fsTxt(f)), s: f => f.hFs ?? f.elapsedReg ?? -1 }, { l: 'Cierre (registro \u2192 cierre)', v: f => slaPill(slaMeta(f), metaLbl()) + ' ' + nw(fmtH(f.hC ?? f.elapsed)), s: f => f.hC ?? f.elapsed ?? -1 }, { l: 'Auditor\u00eda', v: f => f.aud ? calPill(f.aud.cal) : '<span class="muted">\u2014</span>', s: f => f.aud ? f.aud.score : -1 }], fs.slice(0, 2000), { click: f => abrirFolio(f.folio), max });
 }
 function folioListPanel(id, base) {
   const st = S.sel[id] || (S.sel[id] = { est: '', canal: '' });
-  const ests = [['', 'Todos', () => true], ['pendiente', 'Pendiente', f => f.cls === 'pendiente'], ['seguimiento', 'En seguimiento', f => f.cls === 'seguimiento'], ['termino', 'T\u00e9rmino', f => f.cls === 'termino'], ['cerrado', 'Cerrado', f => f.cls === 'cerrado'], ['cancelado', 'Cancelado', f => f.cls === 'cancelado'], ['problemas', 'Con problemas', f => problemas(f).length > 0], ['vencido', 'Abiertos vencidos (+7 d\u00edas)', f => slaMeta(f) === 'vencido'], ['fuera', 'Cerrados tarde (+7 d\u00edas)', f => slaMeta(f) === 'fuera'], ['fsv', 'Apertura vencida (+48 h)', f => f.slaFs === 'fuera' || f.slaFs === 'vencido'], ['reas', 'Reasignados', f => f.reasig], ['inad', 'Gesti\u00f3n inadecuada', f => f.aud && (f.aud.cal === 'I' || f.aud.cal === 'N')]];
+  const ests = [['', 'Todos', () => true], ['pendiente', 'Pendiente', f => f.cls === 'pendiente'], ['seguimiento', 'En seguimiento', f => f.cls === 'seguimiento'], ['termino', 'T\u00e9rmino', f => f.cls === 'termino'], ['cerrado', 'Cerrado', f => f.cls === 'cerrado'], ['cancelado', 'Cancelado', f => f.cls === 'cancelado'], ['problemas', 'Con problemas', f => problemas(f).length > 0], ['vencido', 'Abiertos vencidos (+7 d\u00edas)', f => slaMeta(f) === 'vencido'], ['fuera', 'Cerrados tarde (+7 d\u00edas)', f => slaMeta(f) === 'fuera'], ['fsv', 'Apertura vencida (d\u00eda ' + (S.cfg.apDias + 1) + '+)', f => f.slaFs === 'fuera' || f.slaFs === 'vencido'], ['reas', 'Reasignados', f => f.reasig], ['inad', 'Gesti\u00f3n inadecuada', f => f.aud && (f.aud.cal === 'I' || f.aud.cal === 'N')]];
   const canals = [['', 'Todos los canales', () => true], ['ot', 'Otros medios', f => !f.encuesta], ['em', 'Encuesta \u00b7 manual', f => f.encuesta && !f.auto], ['ea', 'Encuesta \u00b7 autom\u00e1tico', f => f.encuesta && f.auto]];
   const fe = ests.find(x => x[0] === st.est)[2], fc = canals.find(x => x[0] === st.canal)[2];
   const list = base.filter(f => fe(f) && fc(f)).sort((a, b) => b.fReg - a.fReg);
@@ -1020,7 +1047,7 @@ function folioListPanel(id, base) {
   <div class="tabs noprint">${canals.map(([k, l, fn]) => `<button data-fl="${id}" data-t="canal" data-v="${k}" class="${st.canal === k ? 'on' : ''}">${l} (${fmtN(base.filter(f => fn(f) && fe(f)).length)})</button>`).join('')}<span class="sp"></span><button class="btn sm" id="xl_${id}">Exportar a Excel</button></div>${folioTable(list, 560)}`;
 }
 function exportFolioList(list) {
-  const rows = [['Folio', 'Fecha registro', 'Estatus', 'Ejecutiva', 'Cerr\u00f3', 'Canal', 'Zona', 'Sucursal', 'Motivos', '1er comentario', 'Horas registro \u2192 1er comentario', 'Apertura ' + apLbl(), 'Fecha cierre', 'Horas cierre / transcurridas', 'Cierre ' + metaLbl(), 'Problemas', 'Causa probable del vencimiento', 'Reasignado', 'Auditor\u00eda']];
+  const rows = [['Folio', 'Fecha registro', 'Estatus', 'Ejecutiva', 'Cerr\u00f3', 'Canal', 'Zona', 'Sucursal', 'Motivos', '1er comentario', 'D\u00edas registro \u2192 1er comentario', 'Apertura ' + apLbl(), 'Fecha cierre', 'D\u00edas a cierre / transcurridos', 'Cierre ' + metaLbl(), 'Problemas', 'Causa probable del vencimiento', 'Reasignado', 'Auditor\u00eda']];
   for (const f of list) rows.push([f.folio, fmtDT(f.fReg), f.estatus, f.owner, f.closer || '', canalKey(f), f.zona, f.sucursal, f.motivos.join(' \u00b7 '), fmtDT(f.fApert), f.hFs != null ? +f.hFs.toFixed(1) : '', f.slaFs, fmtDT(f.fCierre), +(f.hC ?? f.elapsed ?? 0).toFixed(1), slaMeta(f), problemas(f).map(x => x[0]).join(' \u00b7 '), f.cv || '', f.reasig ? 'SI' : '', f.aud ? CAL_LBL[f.aud.cal] : '']);
   xlsxDescarga([['Folios', rows]], 'Listado_folios.xlsx');
 }
@@ -1105,8 +1132,8 @@ function vTemporal(el) {
   <div class="tabs">${['dia', 'semana', 'quincena', 'mes'].map(g => `<button data-g="${g}" class="${g === gran ? 'on' : ''}">${{ dia: 'D\u00eda', semana: 'Semana', quincena: 'Quincena', mes: 'Mes' }[g]}</button>`).join('')}</div>
   ${gran === 'dia' ? `<div class="glass card"><h2>Entradas vs cierres por d\u00eda</h2><div class="chart" style="height:360px">${chart('cTd', dailyCfg(r))}</div></div>` : `
   <div class="grid g2"><div class="glass card"><h2>Entradas y cierres</h2><div class="chart">${chart('cT1', { type: 'bar', data: { labels: ps.map(p => p.label), datasets: [{ label: 'Entradas', data: rows.map(x => x.m.n), backgroundColor: COL.pri, borderRadius: 4 }, { label: 'Cierres realizados', data: rows.map(x => x.cierres), backgroundColor: '#6AD2FF', borderRadius: 4 }] } })}</div></div>
-  <div class="glass card"><h2>Tendencia de indicadores</h2><div class="chart">${chart('cT2', { type: 'line', data: { labels: ps.map(p => p.label), datasets: [['% cierre', 'pctCierre'], ['Cumplimiento en tiempo', 'cumpT'], ['1er comentario \u226448 h', 'slaFs'], ['% procedencia', 'pctProc']].map(([l, k], i) => ({ label: l, data: rows.map(x => x.m[k] != null ? +(x.m[k] * 100).toFixed(1) : null), borderColor: PAL[i], tension: .3 })).concat([{ label: 'Gesti\u00f3n adecuada', data: rows.map(x => x.m.aud.pA != null ? +(x.m.aud.pA * 100).toFixed(1) : null), borderColor: PAL[4], tension: .3 }]) }, options: { scales: { y: pctAxis } } })}</div></div></div>
-  <div class="glass card" style="margin-top:16px"><h2>Comparativo por ${gran}</h2>${table([{ l: 'Periodo', v: x => esc(x.p.label), s: x => x.p.from }, { l: 'Folios', n: 1, v: x => fmtN(x.m.n), s: x => x.m.n }, { l: 'Cerrados', n: 1, v: x => fmtN(x.m.cerr), s: x => x.m.cerr }, { l: 'En tiempo', n: 1, v: x => fmtN(x.m.cerrEnT), s: x => x.m.cerrEnT }, { l: 'Fuera de tiempo', n: 1, v: x => fmtN(x.m.cerrFuera), s: x => x.m.cerrFuera }, { l: 'Abiertos vencidos', n: 1, v: x => fmtN(x.m.vencidos), s: x => x.m.vencidos }, { l: 'Cierres en periodo', n: 1, v: x => fmtN(x.cierres), s: x => x.cierres }, { l: '% cierre', n: 1, v: x => fmtP(x.m.pctCierre), s: x => x.m.pctCierre ?? -1 }, { l: '% en tiempo', n: 1, v: x => fmtP(x.m.cumpT), s: x => x.m.cumpT ?? -1 }, { l: '1er com. \u226448 h', n: 1, v: x => fmtP(x.m.slaFs), s: x => x.m.slaFs ?? -1 }, { l: 'Gesti\u00f3n adecuada', n: 1, v: x => fmtP(x.m.aud.pA), s: x => x.m.aud.pA ?? -1 }], rows)}</div>`}`;
+  <div class="glass card"><h2>Tendencia de indicadores</h2><div class="chart">${chart('cT2', { type: 'line', data: { labels: ps.map(p => p.label), datasets: [['% cierre', 'pctCierre'], ['Cumplimiento en tiempo', 'cumpT'], ['1er comentario \u2264' + S.cfg.apDias + ' d\u00edas', 'slaFs'], ['% procedencia', 'pctProc']].map(([l, k], i) => ({ label: l, data: rows.map(x => x.m[k] != null ? +(x.m[k] * 100).toFixed(1) : null), borderColor: PAL[i], tension: .3 })).concat([{ label: 'Gesti\u00f3n adecuada', data: rows.map(x => x.m.aud.pA != null ? +(x.m.aud.pA * 100).toFixed(1) : null), borderColor: PAL[4], tension: .3 }]) }, options: { scales: { y: pctAxis } } })}</div></div></div>
+  <div class="glass card" style="margin-top:16px"><h2>Comparativo por ${gran}</h2>${table([{ l: 'Periodo', v: x => esc(x.p.label), s: x => x.p.from }, { l: 'Folios', n: 1, v: x => fmtN(x.m.n), s: x => x.m.n }, { l: 'Cerrados', n: 1, v: x => fmtN(x.m.cerr), s: x => x.m.cerr }, { l: 'En tiempo', n: 1, v: x => fmtN(x.m.cerrEnT), s: x => x.m.cerrEnT }, { l: 'Fuera de tiempo', n: 1, v: x => fmtN(x.m.cerrFuera), s: x => x.m.cerrFuera }, { l: 'Abiertos vencidos', n: 1, v: x => fmtN(x.m.vencidos), s: x => x.m.vencidos }, { l: 'Cierres en periodo', n: 1, v: x => fmtN(x.cierres), s: x => x.cierres }, { l: '% cierre', n: 1, v: x => fmtP(x.m.pctCierre), s: x => x.m.pctCierre ?? -1 }, { l: '% en tiempo', n: 1, v: x => fmtP(x.m.cumpT), s: x => x.m.cumpT ?? -1 }, { l: '1er com. \u2264' + S.cfg.apDias + ' d', n: 1, v: x => fmtP(x.m.slaFs), s: x => x.m.slaFs ?? -1 }, { l: 'Gesti\u00f3n adecuada', n: 1, v: x => fmtP(x.m.aud.pA), s: x => x.m.aud.pA ?? -1 }], rows)}</div>`}`;
   $$('#v-temporal .tabs button').forEach(b => b.onclick = () => { S.sel.tg = b.dataset.g; render(); });
 }
 
@@ -1124,7 +1151,7 @@ function buildReport() {
   const rec = [];
   const cnt = countBy(crit, a => a.ejec); if (cnt.length) rec.push(`Acompa\u00f1amiento individual, priorizando a quienes acumulan m\u00e1s alertas cr\u00edticas: ${cnt.slice(0, 5).map(([e, n]) => `${e} (${n})`).join(', ')}.`);
   if (m.vencidos) rec.push(`Depurar ${fmtN(m.vencidos)} folios que siguen vencidos (${metaLbl()}).`);
-  if (m.fsVen) rec.push(`Atender de inmediato ${fmtN(m.fsVen)} folios que siguen en APERTURA sin comentario con m\u00e1s de 48 h.`);
+  if (m.fsVen) rec.push(`Atender de inmediato ${fmtN(m.fsVen)} folios que siguen en APERTURA sin comentario con m\u00e1s de ${S.cfg.apDias} d\u00edas.`);
   errs.slice(0, 3).forEach(([l, p, id]) => rec.push(`${l} en ${fmtP(p, 0)} de los folios auditados: ${RECOM[id]}`));
   return { r, p, m, q, ex, al, crit, sucs, causas, coords, dir, errs, rec };
 }
@@ -1147,7 +1174,7 @@ function vReporte(el) {
 }
 function repKpis(R) {
   const { m, q } = R;
-  return [['Folios \u00fanicos', fmtN(m.n), fmtN(q.n)], ['Cerrados', fmtN(m.cerr), fmtN(q.cerr)], ['Cerrados en tiempo (' + metaLbl() + ')', fmtN(m.cerrEnT), fmtN(q.cerrEnT)], ['Cerrados fuera de tiempo', fmtN(m.cerrFuera), fmtN(q.cerrFuera)], ['Abiertos vencidos', fmtN(m.vencidos), fmtN(q.vencidos)], ['% de cierre', fmtP(m.pctCierre), fmtP(q.pctCierre)], ['% cumplimiento en tiempo', fmtP(m.cumpT), fmtP(q.cumpT)], ['1er comentario \u226448 h', fmtP(m.slaFs), fmtP(q.slaFs)], ['Cierre \u2264' + S.cfg.slaCH + ' h', fmtP(m.slaC), fmtP(q.slaC)], ['Cierre \u2264' + S.cfg.cierreDias + ' d\u00edas', fmtP(m.slaC7), fmtP(q.slaC7)], ['% procedencia', fmtP(m.pctProc), fmtP(q.pctProc)], ['Gesti\u00f3n adecuada', fmtP(m.aud.pA), fmtP(q.aud.pA)], ['Prom. cierre', fmtH(m.avgC), fmtH(q.avgC)]];
+  return [['Folios \u00fanicos', fmtN(m.n), fmtN(q.n)], ['Cerrados', fmtN(m.cerr), fmtN(q.cerr)], ['Cerrados en tiempo (' + metaLbl() + ')', fmtN(m.cerrEnT), fmtN(q.cerrEnT)], ['Cerrados fuera de tiempo', fmtN(m.cerrFuera), fmtN(q.cerrFuera)], ['Abiertos vencidos', fmtN(m.vencidos), fmtN(q.vencidos)], ['% de cierre', fmtP(m.pctCierre), fmtP(q.pctCierre)], ['% cumplimiento en tiempo', fmtP(m.cumpT), fmtP(q.cumpT)], ['1er comentario \u2264' + S.cfg.apDias + ' d\u00edas', fmtP(m.slaFs), fmtP(q.slaFs)], ['Cierre \u2264' + S.cfg.slaCH + ' h', fmtP(m.slaC), fmtP(q.slaC)], ['Cierre \u2264' + S.cfg.cierreDias + ' d\u00edas', fmtP(m.slaC7), fmtP(q.slaC7)], ['% procedencia', fmtP(m.pctProc), fmtP(q.pctProc)], ['Gesti\u00f3n adecuada', fmtP(m.aud.pA), fmtP(q.aud.pA)], ['Prom. cierre', fmtH(m.avgC), fmtH(q.avgC)]];
 }
 function printReport() { document.body.classList.add('printing-report'); setTimeout(() => { window.print(); document.body.classList.remove('printing-report'); }, 80); }
 function exportReportXlsx() {
@@ -1194,12 +1221,12 @@ const captCache = {};
 async function captura(mes, force) { if (!captCache[mes] || force) { const r = await call('apiBonos', mes); captCache[mes] = {}; r.captura.forEach(x => captCache[mes][x['Ejecutiva']] = { mon: x['Monitoreo %'], aud: x['Auditor\u00eda %'], sat: String(x['Satisfacci\u00f3n (SI/NO)']).toUpperCase() === 'SI' }); } return captCache[mes]; }
 function bonoIndicadores(e, r) {
   const bc = S.ses.bono; const el = S.folios.filter(f => f.owner === e && !f.auto && uniOk(f, S.flt.universo) && inR(f.fReg, r) && f.cls !== 'cancelado');
-  let aOk = 0, aDen = 0, sdN = 0, sdDen = 0, cOk = 0, cDen = 0; const lim = bc.cierreDias * 24; const now = S.cfg.corte === 'archivo' ? S.cutoffMs : nowNaive();
+  let aOk = 0, aDen = 0, sdN = 0, sdDen = 0, cOk = 0, cDen = 0; const lim = bc.cierreDias; const now = S.cfg.corte === 'archivo' ? S.cutoffMs : nowNaive();
   for (const f of el) {
     if (f.slaFs === 'cumple') { aOk++; aDen++; } else if (f.slaFs === 'fuera' || f.slaFs === 'vencido') aDen++;
     if (f.cls === 'cerrado') for (const x of f.rows) { sdDen++; if (!x.clasif || x.clasif === 'SIN DEFINIR') sdN++; }
     const st = bc.cierreDesde === 'comentario' && f.fAp != null ? f.fAp : f.fReg;
-    if (f.cls === 'cerrado' && f.fCierre != null) { cDen++; if ((f.fCierre - st) / H <= lim) cOk++; } else if (f.open && (now - st) / H > lim) cDen++;
+    if (f.cls === 'cerrado' && f.fCierre != null) { cDen++; if (diasEntre(st, f.fCierre) <= lim) cOk++; } else if (f.open && diasEntre(st, now) > lim) cDen++;
   }
   return { n: el.length, ape: ratio(aOk, aDen), sd: ratio(sdN, sdDen), cie: ratio(cOk, cDen) };
 }
@@ -1249,7 +1276,7 @@ async function vBonos(el) {
 async function vAdmin(el) {
   if (S.ses.rol !== 'ADMIN') { el.innerHTML = '<div class="glass empty"><b>Solo administradores</b></div>'; return; }
   const a = await call('apiAdmin'); const c = S.cfg.raw;
-  const cfgCampos = [['TIEMPO_RANKING', 'Meta de tiempo para ranking y auditor\u00eda', ['48H', '7D']], ['SLA_1ER_H', 'Horas al primer comentario'], ['SLA_CIERRE_H', 'Meta de cierre (horas)'], ['CIERRE_DIAS', 'Meta de cierre (d\u00edas)'], ['INICIO_CIERRE', 'Cierre medido desde', ['registro', 'apertura']], ['PESO_PROD', 'Peso productividad %'], ['PESO_RES', 'Peso resoluci\u00f3n %'], ['PESO_OPO', 'Peso oportunidad %'], ['PROD_VOL', 'Productividad: % por volumen en tiempo'], ['MIN_FOLIOS', 'Folios m\u00ednimos para calificar'], ['TERMINO_COMO', 'Estatus TERMINO', ['abierto', 'cerrado']], ['MADUREZ_DIAS', 'D\u00edas de madurez'], ['CORTE', 'Abiertos medidos hasta', ['hoy', 'archivo']], ['AUD_ADECUADA', 'Auditor\u00eda: puntaje para adecuada (0\u20131)'], ['AUD_PARCIAL', 'Auditor\u00eda: puntaje para parcial (0\u20131)'], ['AUD_PATRON_PCT', 'Patr\u00f3n: % de folios con mismo error'], ['AUD_PATRON_MIN', 'Patr\u00f3n: folios auditados m\u00ednimos'], ['MESES_INICIALES', 'Meses que carga al abrir']];
+  const cfgCampos = [['TIEMPO_RANKING', 'Meta de tiempo para ranking y auditor\u00eda', ['48H', '7D']], ['APERTURA_DIAS', 'D\u00edas al primer comentario'], ['SLA_CIERRE_H', 'Meta de cierre (horas)'], ['CIERRE_DIAS', 'Meta de cierre (d\u00edas)'], ['INICIO_CIERRE', 'Cierre medido desde', ['registro', 'apertura']], ['PESO_PROD', 'Peso productividad %'], ['PESO_RES', 'Peso resoluci\u00f3n %'], ['PESO_OPO', 'Peso oportunidad %'], ['PROD_VOL', 'Productividad: % por volumen en tiempo'], ['MIN_FOLIOS', 'Folios m\u00ednimos para calificar'], ['TERMINO_COMO', 'Estatus TERMINO', ['abierto', 'cerrado']], ['MADUREZ_DIAS', 'D\u00edas de madurez'], ['CORTE', 'Abiertos medidos hasta', ['hoy', 'archivo']], ['AUD_ADECUADA', 'Auditor\u00eda: puntaje para adecuada (0\u20131)'], ['AUD_PARCIAL', 'Auditor\u00eda: puntaje para parcial (0\u20131)'], ['AUD_PATRON_PCT', 'Patr\u00f3n: % de folios con mismo error'], ['AUD_PATRON_MIN', 'Patr\u00f3n: folios auditados m\u00ednimos'], ['MESES_INICIALES', 'Meses que carga al abrir']];
   el.innerHTML = `${header('Usuarios, equipos y datos', 'Los usuarios y equipos se editan directamente en Google Sheets; aqu\u00ed se validan', `<a class="btn" href="${esc(a.sheetUrl)}" target="_blank"><span class="ms">table_view</span>Abrir Google Sheets</a><button class="btn pri" id="aProc"><span class="ms">sync</span>Sincronizar Excel ahora</button>`)}
   ${a.sinEquipo.length ? `<div class="banner warn glass"><b>${a.sinEquipo.length} ejecutiva(s) con folios recientes sin coordinador</b> en la hoja Equipos: ${a.sinEquipo.map(x => esc(x.ejecutiva) + ' (' + x.folios + ')').join(', ')}. Agr\u00e9galas con el nombre exacto como aparece en el reporte.</div>` : '<div class="banner info glass">Todas las ejecutivas con folios recientes tienen coordinador asignado.</div>'}
   <div class="grid g2"><div class="glass card"><h2>Usuarios (hoja Usuarios)</h2>${table([{ l: 'Correo', v: u => esc(u['Correo']) }, { l: 'Nombre', v: u => esc(u['Nombre']) }, { l: 'Rol', v: u => pill(u['Rol'], u['Rol'] === 'ADMIN' ? 'info' : 'n') }, { l: 'Activo', v: u => String(u['Activo']).toUpperCase() === 'SI' ? pill('SI', 'ok') : pill('NO', 'bad') }], a.usuarios, { max: 320 })}</div>
@@ -1274,8 +1301,8 @@ function vMetodo(el) {
   <h2>2. Flujo de datos</h2><p>El Excel de origen (<code>${esc(S.ses.origen?.nombre || 'ARCHIVO_ORIGEN_ID')}</code>) vive en Drive \u2192 un activador horario revisa si cambi\u00f3; si cambi\u00f3, lo convierte a Google Sheets temporal, lo lee, consolida en la hoja <code>Folios</code> por llave <code>Folio|\u00c1rea|Subestudio|Motivo</code> (sin duplicar), registra cada cambio de campo en <code>Cambios</code>, audita los folios cerrados y genera un archivo de cach\u00e9 por mes. El dashboard carga por mes solo los folios que el usuario tiene permiso de ver.</p>
   <h2>3. Periodos</h2><p>Semanas Salud Digna de <b>s\u00e1bado a viernes</b> (corte el viernes); la semana 1 inicia el primer s\u00e1bado del a\u00f1o, de modo que el 31-oct\u20136-nov-2026 es la S44. Quincenas 1\u201315 y 16\u2013fin de mes. Todo se asigna por <b>Fecha Registro</b>; los cierres del periodo, por Fecha Cierre.</p>
   <h2>4. Tiempos</h2><table><tr><th>Indicador</th><th>F\u00f3rmula</th></tr>
-  <tr><td><b>Apertura</b> (\u2264${c.slaFsH} h)</td><td>Termina con lo primero que ocurra: el primer comentario de una persona en el historial o la Fecha de primer seguimiento. Un comentario ya cuenta como seguimiento aunque el estatus siga en APERTURA. Con la Fecha de primer seguimiento (trae hora): en tiempo si \u2264 ${c.slaFsH} h. Con el comentario del historial (solo trae el d\u00eda): en tiempo si fue a m\u00e1s tardar ${Math.floor(c.slaFsH / 24)} d\u00edas despu\u00e9s del d\u00eda de registro. Sin comentario: en tiempo hasta ${c.slaFsH} h y <b>vencido</b> despu\u00e9s. Sin ninguna fecha: "sin fecha", no cuenta como vencido.</td></tr>
-  <tr><td><b>Seguimiento</b> (≤${c.cierreDias} días)</td><td>Desde la Fecha Registro, el folio tiene ${c.cierreDias} días naturales (${c.cierreDias * 24} h) para cerrarse, esté en APERTURA, SEGUIMIENTO o TÉRMINO. Si el día ${c.cierreDias + 1} sigue abierto está <b>vencido</b>; si se cerró después, es cerrado tarde.</td></tr>
+  <tr><td><b>Apertura</b> (\u2264${c.apDias} d\u00edas)</td><td>Se cuenta en d\u00edas naturales, no en horas: el d\u00eda del registro es el d\u00eda 0. Termina con lo primero que ocurra: el primer comentario de una persona en el historial o la Fecha de primer seguimiento; un comentario ya cuenta aunque el estatus siga en APERTURA. Primer comentario a m\u00e1s tardar el d\u00eda ${c.apDias} = <b>en tiempo</b>; el d\u00eda ${c.apDias + 1} o despu\u00e9s = <b>vencida</b>. Sin comentario: a\u00fan a tiempo hasta el d\u00eda ${c.apDias} y <b>vencida</b> desde el d\u00eda ${c.apDias + 1}. Sin ninguna fecha: "sin fecha", no cuenta como vencida.</td></tr>
+  <tr><td><b>Seguimiento</b> (≤${c.cierreDias} días)</td><td>Desde la Fecha Registro, el folio tiene ${c.cierreDias} días naturales para cerrarse (se cuenta por día, no por hora), esté en APERTURA, SEGUIMIENTO o TÉRMINO. Si el día ${c.cierreDias + 1} sigue abierto está <b>vencido</b>; si se cerró después, es cerrado tarde.</td></tr>
   <tr><td>Al día</td><td>Folios abiertos hoy: en APERTURA (en tiempo / vencidas) y en SEGUIMIENTO o TÉRMINO (en tiempo / vencidos). Hora de Mazatlán.</td></tr>
   <tr><td>A\u00fan a tiempo</td><td>Abiertos que todav\u00eda no cumplen el plazo (antes "en plazo").</td></tr>
   <tr><td>Fuera de la evaluaci\u00f3n</td><td>Cierres autom\u00e1ticos de encuesta digital y folios en el archivo de reasignados (Config \u2192 REASIGNADOS_ID): se cuentan aparte.</td></tr>
@@ -1288,7 +1315,7 @@ function vMetodo(el) {
   <tr><td>% de cierre</td><td>Cerrados \u00f7 (folios \u2212 cancelados).</td></tr></table>
   <h2>5. Desempe\u00f1o general (cambio respecto a la versi\u00f3n anterior)</h2><ul>
   <li><b>Productividad</b> = ${c.prodVol}% \u00d7 (cierres <u>en tiempo</u> acreditados \u00f7 m\u00e1ximo del equipo) + ${100 - c.prodVol}% \u00d7 (gestionados \u00f7 asignados). <i>Antes contaba todos los cierres; ahora solo los oportunos, para no premiar volumen cerrado fuera de tiempo.</i></li>
-  <li><b>Resoluci\u00f3n</b> = % de cierre.</li><li><b>Oportunidad</b> = promedio de (1er comentario \u226448 h) y (% cumplimiento en tiempo). <i>Antes usaba cierre \u226448 h sin contar los vencidos abiertos en la misma proporci\u00f3n.</i></li>
+  <li><b>Resoluci\u00f3n</b> = % de cierre.</li><li><b>Oportunidad</b> = promedio de (1er comentario \u22642 d\u00edas) y (% cumplimiento en tiempo). <i>Antes usaba cierre \u226448 h sin contar los vencidos abiertos en la misma proporci\u00f3n.</i></li>
   <li>Desempe\u00f1o = (${c.wP}\u00b7P + ${c.wR}\u00b7R + ${c.wO}\u00b7O) \u00f7 ${c.wP + c.wR + c.wO}. M\u00ednimo ${c.minFolios} folios elegibles.</li></ul>
   <h2>6. Auditor\u00eda de calidad (autom\u00e1tica por reglas, sin IA)</h2><p>Se audita cada folio cerrado con gesti\u00f3n manual. Cada criterio se califica Cumple / Parcial / No cumple y guarda la evidencia textual que lo sustenta (visible en el detalle del folio).</p>
   <table><tr><th>Criterio</th><th>Regla</th></tr>
@@ -1299,7 +1326,7 @@ function vMetodo(el) {
   <tr><td>C5 Evidencia</td><td>Menciona evidencia, captura, adjunto, comprobante, imagen.</td></tr>
   <tr><td>C6 Causa ra\u00edz</td><td>Columna Causas = cumple; inferida del texto de la gesti\u00f3n = parcial; ninguna = no cumple ("No determinable").</td></tr>
   <tr><td>C7 Justificaci\u00f3n</td><td>Las \u00faltimas gestiones explican la resoluci\u00f3n (\u226560 caracteres con t\u00e9rminos de resoluci\u00f3n); texto corto = parcial.</td></tr>
-  <tr><td>C8 Tiempos</td><td>1er comentario \u226448 h y cierre en la meta; uno de los dos = parcial.</td></tr>
+  <tr><td>C8 Tiempos</td><td>1er comentario \u22642 d\u00edas y cierre en la meta; uno de los dos = parcial.</td></tr>
   <tr><td>C9 Cierre</td><td>Todas las clasificaciones PROCEDE/NO PROCEDE; procedente sin acci\u00f3n correctiva = parcial; SIN DEFINIR o vac\u00eda = no cumple.</td></tr></table>
   <p>Ponderaci\u00f3n: C3, C4 y C7 valen 1.5; el resto 1. Puntaje \u2265${c.aud.adecuada} = adecuada; \u2265${c.aud.parcial} = parcialmente adecuada; menor = inadecuada; sin gestiones de personas = informaci\u00f3n insuficiente.</p>
   <p><b>Procedencia:</b> se respeta la clasificaci\u00f3n registrada solo si hay justificaci\u00f3n; si falta justificaci\u00f3n o la clasificaci\u00f3n es SIN DEFINIR/vac\u00eda = <b>No determinable por falta de informaci\u00f3n</b>. Nunca se asume.</p>

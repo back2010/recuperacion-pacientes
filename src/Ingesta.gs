@@ -207,9 +207,13 @@ function quincenas_(a, b) { const out = []; let d = new Date(a); while (d.getTim
 function hashRec_(o) { return hash_([o.estatus, o.fFs, o.fCierre, o.clasif, o.ejec, o.acciones, o.impacto, o.atClin, o.expTec, o.causas, hash_(String(o.hist || '')), reasigTxt_(o.reasig), o.zona, o.sucursal].join('¦')); }
 function reasigTxt_(lista) { return (lista || []).map(function (x) { return x.u + ' @ ' + (x.f ? Utilities.formatDate(new Date(x.f), 'UTC', 'dd/MM/yyyy HH:mm') : ''); }).join('; '); }
 function reasigParse_(txt) { if (!txt) return []; return String(txt).split('; ').map(function (s) { const p = s.split(' @ '); return { u: p[0], f: aNaive_(p[1] || '') }; }); }
+/* Datos del paciente que la herramienta no usa: no se guardan (acordado nov-2026). Las columnas se quedan vacías
+   para no mover el orden de la hoja Folios. */
+const NO_GUARDAR = ['fnac', 'tel', 'telInt'];
 function filaDeRec_(o) {
   return FOL_COLS.map(function (c) {
     const k = c[0];
+    if (NO_GUARDAR.indexOf(k) >= 0) return '';
     if (FOL_DATE.indexOf(k) >= 0) return naiveADate_(o[k]);
     if (k === 'reasig') return reasigTxt_(o.reasig);
     if (k === 'prevEjec') return (o.prevEjec || []).join(', ');
@@ -316,7 +320,7 @@ function reconstruirMes_(mes, cfg, ctx) {
   const toMin = function (ms) { return ms === null || ms === undefined ? null : Math.round(ms / 60000); };
   const audIdx = ctx.audIdx || (ctx.audIdx = leerJson_('aud_index.json') || {});
   const nuevasAud = []; const ahora = new Date();
-  const audHashBase = REGLAS_VERSION + '|' + [cfg.TIEMPO_RANKING, cfg.SLA_1ER_H, cfg.SLA_CIERRE_H, cfg.CIERRE_DIAS, cfg.INICIO_CIERRE, cfg.AUD_ADECUADA, cfg.AUD_PARCIAL].join(',');
+  const audHashBase = REGLAS_VERSION + '|' + [cfg.TIEMPO_RANKING, cfg.APERTURA_DIAS, cfg.SLA_CIERRE_H, cfg.CIERRE_DIAS, cfg.INICIO_CIERRE, cfg.AUD_ADECUADA, cfg.AUD_PARCIAL].join(',');
   const IMP = { 'CENTINELA': 6, 'EVENTO ADVERSO': 5, 'ALTO IMPACTO': 4, 'NEAR MISS': 3, 'MEDIO IMPACTO': 2, 'BAJO IMPACTO': 1 };
   const out = [];
   Object.keys(grupos).forEach(function (folio) {
@@ -369,3 +373,10 @@ function reconstruirMes_(mes, cfg, ctx) {
   return { mes: mes, folios: out.length, auditoriasNuevas: nuevasAud.length };
 }
 
+
+/** Una sola vez: borra de la hoja Folios la fecha de nacimiento y los teléfonos ya guardados. Ejecutar desde el editor. */
+function borrarTelefonoYNacimiento() {
+  const sh = hoja_(HOJAS.FOLIOS); const n = sh.getLastRow() - 1; if (n < 1) return 'Sin filas';
+  NO_GUARDAR.forEach(function (k) { sh.getRange(2, colIndex_(k) + 1, n, 1).clearContent(); });
+  Logger.log('Borradas ' + NO_GUARDAR.length + ' columnas en ' + n + ' filas'); return n;
+}

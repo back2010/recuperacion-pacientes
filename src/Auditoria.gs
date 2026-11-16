@@ -58,7 +58,7 @@ const RECOMENDACION = {
   C5: 'Dejar evidencia de las acciones (capturas, comprobantes, folios de devolución o ticket).',
   C6: 'Identificar y registrar la causa raíz (columna Causas o explicación en la gestión).',
   C7: 'Explicar en la última gestión por qué se resuelve así y qué se ofreció al paciente.',
-  C8: 'Hacer el primer contacto dentro de 48 h y cerrar dentro de la meta de tiempo.',
+  C8: 'Hacer el primer contacto dentro de 2 días y cerrar dentro de la meta de tiempo.',
   C9: 'Cerrar con clasificación PROCEDE/NO PROCEDE y, si procede, registrar la acción correctiva.',
 };
 
@@ -114,7 +114,7 @@ function auditarFolio_(f, rows, entries, cfg) {
   evid.C7 = jl ? '"' + ult.replace(/\s+/g, ' ').slice(0, 220) + (ult.length > 220 ? '…' : '') + '"' : 'La gestión final no explica la resolución.';
   // C8 Tiempos
   const ap = f.fAp !== null ? Math.round((f.fAp - Date.UTC(new Date(f.fReg).getUTCFullYear(), new Date(f.fReg).getUTCMonth(), new Date(f.fReg).getUTCDate())) / 864e5) : null;
-  const ok1 = ap !== null && ap <= Math.floor(cfg.SLA_1ER_H / 24);
+  const ok1 = ap !== null && ap <= Number(cfg.APERTURA_DIAS);
   const metaH = String(cfg.TIEMPO_RANKING).toUpperCase() === '7D' ? cfg.CIERRE_DIAS * 24 : cfg.SLA_CIERRE_H;
   const inicio = cfg.INICIO_CIERRE === 'apertura' && f.fAp !== null ? f.fAp : f.fReg;
   const hC = f.fCierre !== null ? (f.fCierre - inicio) / 36e5 : null;
