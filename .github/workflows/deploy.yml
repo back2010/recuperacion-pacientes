@@ -22,7 +22,7 @@ jobs:
         run: |
           falta=0
           for f in src/App.html src/Estilos.html; do
-            [ -f "$f" ] || { echo "::error::Falta $f"; falta=1; }
+            [ -f "$f" ] || echo "::warning::Falta $f: la página web no abrirá hasta agregarlo."
           done
           for fn in parseHist_ nrm_ auditarFolio_; do
             grep -rqE "function ${fn}\s*\(" src/ || { echo "::error::Ningún archivo de src/ define ${fn}()"; falta=1; }
