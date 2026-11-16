@@ -93,7 +93,7 @@ function apiSesion() {
     sheetUrl: ses.rol === 'ADMIN' ? urlLibro_() : null,
     origen: infoOrigen_(false),
     versiones: versionesMeses_(),
-    reasignados: leerReasignados_(),
+    reasignados: leerReasignados_(true),
   });
 }
 

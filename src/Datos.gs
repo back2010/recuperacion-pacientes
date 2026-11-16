@@ -284,9 +284,10 @@ function leerJson_(nombre) {
   if (!it.hasNext()) return null;
   return JSON.parse(it.next().getBlob().getDataAsString());
 }
-/* Caché de servidor por mes (CacheService, 6 h). Trozos de 50 000 caracteres para no rebasar
-   los 100 KB por llave aunque haya acentos. */
-const TROZO = 50000, MAX_TROZOS = 150;
+/* Caché de servidor por mes (CacheService, 6 h). Trozos de 30 000 caracteres: con acentos y
+   símbolos un carácter ocupa hasta 3 bytes y el límite es 100 KB por llave (con 50 000 a veces se
+   rebasaba, la caché fallaba en silencio y cada apertura leía el archivo de Drive). */
+const TROZO = 30000, MAX_TROZOS = 240;
 function guardarMesEnCache_(mes, obj) {
   try {
     const txt = JSON.stringify(obj); const n = Math.ceil(txt.length / TROZO); if (n > MAX_TROZOS) return false;

@@ -17,7 +17,8 @@ const REP_COLS = [
   ['causas', 'causas'], ['ejec', 'ejecutivo reactivo'], ['reasigU', 'usuario reasignado automatico'], ['reasigF', 'fecha re-asignacion automatica'],
 ];
 const REQ = ['folio', 'estatus', 'fReg', 'ejec', 'area', 'motivo'];
-const LIMITE_MS = 5 * 60 * 1000;
+/* Apps Script corta cada ejecución a los 6 min: se deja margen para guardar el avance. */
+const LIMITE_MS = 4 * 60 * 1000;
 
 /**
  * Punto de entrada del activador horario y del botón "Sincronizar ahora".
@@ -31,8 +32,7 @@ function procesarOrigen(forzar) {
   const salida = { archivos: [], mesesReconstruidos: [], pendientes: [] };
   try {
     const cfg = leerConfig_();
-    const pend = JSON.parse(props.getProperty('MESES_PENDIENTES') || '[]');
-    const meses = {}; pend.forEach(function (m) { meses[m] = true; });
+    const meses = {}; JSON.parse(props.getProperty('MESES_PENDIENTES') || '[]').forEach(function (m) { meses[m] = true; });
     if (cfg.ARCHIVO_ORIGEN_ID) {
       const file = DriveApp.getFileById(cfg.ARCHIVO_ORIGEN_ID);
       const sello = String(file.getLastUpdated().getTime()) + '|' + cfg.ARCHIVO_ORIGEN_ID;
@@ -42,23 +42,36 @@ function procesarOrigen(forzar) {
           const r = procesarArchivo_(file, cfg);
           r.meses.forEach(function (m) { meses[m] = true; });
           salida.archivos.push(r);
+          // Se guardan ANTES de reconstruir: si se acaba el tiempo, la siguiente corrida termina los meses
+          // (antes se perdían y el dashboard no mostraba lo nuevo hasta que el Excel volviera a cambiar).
+          props.setProperty('MESES_PENDIENTES', JSON.stringify(Object.keys(meses).sort()));
           props.setProperty('ORIGEN_SELLO', sello);
           props.setProperty('ORIGEN_LEIDO', Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm'));
         } catch (e) { salida.archivos.push({ archivo: file.getName(), error: e.message }); registrarCargaError_(file, e.message); }
       } else salida.estado = 'Sin cambios en el Excel desde la última lectura.';
     } else salida.aviso = 'Falta ARCHIVO_ORIGEN_ID en la hoja Config.';
-    const lista = Object.keys(meses).sort();
+    // Primero los meses más recientes: son los que el dashboard abre al iniciar.
+    const lista = Object.keys(meses).sort().reverse(); const ctx = {};
     for (let i = 0; i < lista.length; i++) {
       if (Date.now() - t0 > LIMITE_MS) { salida.pendientes = lista.slice(i); break; }
-      salida.mesesReconstruidos.push(reconstruirMes_(lista[i], cfg));
+      salida.mesesReconstruidos.push(reconstruirMes_(lista[i], cfg, ctx));
+      props.setProperty('MESES_PENDIENTES', JSON.stringify(lista.slice(i + 1)));
     }
-    props.setProperty('MESES_PENDIENTES', JSON.stringify(salida.pendientes));
-    try { salida.cacheCalentada = calentarCache_(4); } catch (e) { }
-    try { leerReasignados_(); } catch (e) { }
-    if (salida.archivos.length || salida.mesesReconstruidos.length) props.setProperty('ULTIMA_ACTUALIZACION', Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm'));
+    if (salida.mesesReconstruidos.length || salida.archivos.length) props.setProperty('ULTIMA_ACTUALIZACION', Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm'));
+    programarContinuacion_(salida.pendientes.length > 0);
+    if (Date.now() - t0 < LIMITE_MS) { try { salida.cacheCalentada = calentarCache_(4); } catch (e) { } }
+    if (Date.now() - t0 < LIMITE_MS) { try { leerReasignados_(); } catch (e) { } }
   } finally { lock.releaseLock(); }
   return salida;
 }
+/** Si quedaron meses sin reconstruir, se agenda otra corrida en 1 minuto (no se espera a la siguiente hora). */
+function programarContinuacion_(hayPendientes) {
+  try {
+    ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'continuarPendientes') ScriptApp.deleteTrigger(t); });
+    if (hayPendientes) ScriptApp.newTrigger('continuarPendientes').timeBased().after(60 * 1000).create();
+  } catch (e) { console.warn('No se pudo agendar la continuación: ' + e.message); }
+}
+function continuarPendientes() { return procesarOrigen(false); }
 /** Compatibilidad con activadores de la versión anterior. */
 function procesarCarpeta() { return procesarOrigen(false); }
 
@@ -106,7 +119,21 @@ function leerValoresArchivo_(file) {
  */
 function aNaive_(v, tz, ref) {
   if (v === '' || v === null || v === undefined) return null;
-  if (v instanceof Date) { if (tz === TZ) return dateANaive_(v); const s = Utilities.formatDate(v, tz, 'yyyy-MM-dd HH:mm:ss'); return Date.UTC(+s.substr(0, 4), +s.substr(5, 2) - 1, +s.substr(8, 2), +s.substr(11, 2), +s.substr(14, 2), +s.substr(17, 2)); }
+  if (v instanceof Date) {
+    let ms;
+    if (tz === TZ) ms = dateANaive_(v);
+    else { const s = Utilities.formatDate(v, tz, 'yyyy-MM-dd HH:mm:ss'); ms = Date.UTC(+s.substr(0, 4), +s.substr(5, 2) - 1, +s.substr(8, 2), +s.substr(11, 2), +s.substr(14, 2), +s.substr(17, 2)); }
+    // Si al convertir el Excel, Sheets leyó "mm/dd" como "dd/mm", la fecha queda ANTES del registro (imposible).
+    // En ese caso se prueba con día y mes invertidos y se usa si ya no queda antes del registro.
+    if (ref !== null && ref !== undefined) {
+      const dr = new Date(ref), dia = Date.UTC(dr.getUTCFullYear(), dr.getUTCMonth(), dr.getUTCDate());
+      if (ms < dia) {
+        const d = new Date(ms), dd = d.getUTCDate(), mm = d.getUTCMonth() + 1;
+        if (dd <= 12 && dd !== mm) { const alt = Date.UTC(d.getUTCFullYear(), dd - 1, mm, d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()); if (alt >= dia) ms = alt; }
+      }
+    }
+    return ms;
+  }
   if (typeof v === 'number') return Math.round((v - 25569) * 864e5);
   const m = String(v).match(/(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
   if (!m) return null;
@@ -124,10 +151,19 @@ function parsearReporte_(valores, tz) {
   const hi = valores.findIndex(function (r) { return r.some(function (c) { return nrm_(c).trim() === 'folio'; }) && r.some(function (c) { return nrm_(c).trim() === 'estatus'; }); });
   if (hi < 0) throw new Error('No se encontró la fila de encabezados (Folio, Estatus).');
   const hdr = valores[hi].map(function (c) { return nrm_(c).trim(); });
-  const map = {}; REP_COLS.forEach(function (c) { const i = hdr.findIndex(function (x) { return x === c[1] || x.indexOf(c[1]) === 0; }); if (i >= 0) map[c[0]] = i; });
+  // Coincidencia exacta o por inicio; si no, sin acentos, espacios ni "de/del" ("Fecha Primer Seguimiento" = "fecha de primer seguimiento").
+  const compacto = function (t) { return nrm_(t).replace(/\b(de|del|la|el|los|las)\b/g, '').replace(/[^a-z0-9]/g, ''); };
+  const hdrC = hdr.map(compacto);
+  const map = {}; REP_COLS.forEach(function (c) {
+    let i = hdr.findIndex(function (x) { return x === c[1] || x.indexOf(c[1]) === 0; });
+    if (i < 0) { const k = compacto(c[1]); i = hdrC.findIndex(function (x) { return x && (x === k || x.indexOf(k) === 0); }); }
+    if (i >= 0) map[c[0]] = i;
+  });
   const falt = REQ.filter(function (k) { return map[k] === undefined; });
   if (falt.length) throw new Error('Faltan columnas obligatorias: ' + falt.join(', '));
   const warns = []; let pFrom = null, pTo = null;
+  const OPCIONALES = { fFs: 'Fecha de primer seguimiento (sin ella la apertura se mide con el historial)', fCierre: 'Fecha Cierre', hist: 'Historial de Seguimiento', clasif: 'Clasificación de Cierre' };
+  Object.keys(OPCIONALES).forEach(function (k) { if (map[k] === undefined) warns.push('No se encontró la columna ' + OPCIONALES[k] + '.'); });
   for (let i = 0; i < hi; i++) { const t = valores[i].filter(String).join(' '); const m = t.match(/Del\s+(\d{2}\/\d{2}\/\d{4})\s+al\s+(\d{2}\/\d{2}\/\d{4})/i); if (m) { pFrom = aNaive_(m[1]); pTo = aNaive_(m[2]) + 864e5 - 1; } }
   const DATES = ['fEstudio', 'fnac', 'fReg', 'fFs', 'fCierre', 'reasigF'];
   const porLlave = {}; let filas = 0, dup = 0;
@@ -255,20 +291,30 @@ function registrarCargaError_(file, msg) {
 /* ------------------------------------------------------------
  *  CACHÉ MENSUAL + AUDITORÍA
  * ------------------------------------------------------------ */
-function reconstruirMes_(mes, cfg) {
-  cfg = cfg || leerConfig_();
+/**
+ * Genera la caché del mes. ctx (opcional) se comparte entre meses de la misma corrida para no
+ * releer la columna Mes ni el índice de auditorías. Solo se leen los tramos de filas del mes:
+ * cada carga agrega filas al final, así que un mes queda repartido en varios bloques; antes se leía
+ * desde la primera hasta la última fila del mes, que en la práctica era casi toda la hoja por cada mes.
+ */
+function reconstruirMes_(mes, cfg, ctx) {
+  cfg = cfg || leerConfig_(); ctx = ctx || {};
   const sh = hoja_(HOJAS.FOLIOS); const n = Math.max(0, sh.getLastRow() - 1);
   if (!n) return { mes: mes, folios: 0 };
-  const colMes = sh.getRange(2, colIndex_('mes') + 1, n, 1).getValues();
-  let a = -1, b = -1; for (let i = 0; i < n; i++) if (String(colMes[i][0]).slice(0, 7) === mes) { if (a < 0) a = i; b = i; }
-  if (a < 0) return { mes: mes, folios: 0 };
-  const vals = sh.getRange(a + 2, 1, b - a + 1, FOL_COLS.length).getValues();
+  if (!ctx.colMes || ctx.n !== n) { ctx.colMes = sh.getRange(2, colIndex_('mes') + 1, n, 1).getValues(); ctx.n = n; }
+  const colMes = ctx.colMes;
+  const tramos = [];
+  for (let i = 0; i < n; i++) if (String(colMes[i][0]).slice(0, 7) === mes) { const t = tramos[tramos.length - 1]; if (t && i - t[1] <= 30) t[1] = i; else tramos.push([i, i]); }
+  if (!tramos.length) return { mes: mes, folios: 0 };
   const grupos = {};
-  for (let i = 0; i < vals.length; i++) { if (String(colMes[a + i][0]).slice(0, 7) !== mes) continue; const o = filaAObjeto_(vals[i]); (grupos[o.folio] = grupos[o.folio] || []).push(o); }
+  tramos.forEach(function (t) {
+    const vals = sh.getRange(t[0] + 2, 1, t[1] - t[0] + 1, FOL_COLS.length).getValues();
+    for (let j = 0; j < vals.length; j++) { if (String(colMes[t[0] + j][0]).slice(0, 7) !== mes) continue; const o = filaAObjeto_(vals[j]); (grupos[o.folio] = grupos[o.folio] || []).push(o); }
+  });
   const dict = [], di = {};
   const I = function (s) { s = s === null || s === undefined ? '' : String(s); if (!(s in di)) { di[s] = dict.length; dict.push(s); } return di[s]; };
   const toMin = function (ms) { return ms === null || ms === undefined ? null : Math.round(ms / 60000); };
-  const audIdx = leerJson_('aud_index.json') || {};
+  const audIdx = ctx.audIdx || (ctx.audIdx = leerJson_('aud_index.json') || {});
   const nuevasAud = []; const ahora = new Date();
   const audHashBase = REGLAS_VERSION + '|' + [cfg.TIEMPO_RANKING, cfg.SLA_1ER_H, cfg.SLA_CIERRE_H, cfg.CIERRE_DIAS, cfg.INICIO_CIERRE, cfg.AUD_ADECUADA, cfg.AUD_PARCIAL].join(',');
   const IMP = { 'CENTINELA': 6, 'EVENTO ADVERSO': 5, 'ALTO IMPACTO': 4, 'NEAR MISS': 3, 'MEDIO IMPACTO': 2, 'BAJO IMPACTO': 1 };
@@ -297,7 +343,8 @@ function reconstruirMes_(mes, cfg) {
     let aud = null;
     const cerrado = r0.estatus === 'CIERRE' || (r0.estatus === 'TERMINO' && cfg.TERMINO_COMO === 'cerrado');
     if (!auto && cerrado) {
-      const f = { fReg: fReg, fAp: fAp, fCierre: fcMax };
+      const fsMin = fsL.length ? Math.min.apply(null, fsL) : null;
+      const f = { fReg: fReg, fAp: fsMin !== null && fsMin >= fReg - 3600e3 ? fsMin : fAp, fCierre: fcMax };
       const res = auditarFolio_(f, rows, humanas, cfg);
       aud = [res.calidad, res.score, res.proc, I(res.causa), res.fuente, res.crit, I(res.oport)];
       const h = hash_(audHashBase + '|' + rows.map(function (r) { return r.hash; }).sort().join(','));

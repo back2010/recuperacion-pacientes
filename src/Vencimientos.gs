@@ -5,8 +5,8 @@
  *  - Alerta diaria de folios vencidos por correo (ejecutiva, coordinador y administradores).
  *
  *  Reglas vigentes (nov-2026):
- *   · Apertura: del registro al primer comentario, máximo 48 h (SLA_1ER_H).
- *   · Cierre:   del registro al cierre, máximo 7 días naturales = 168 h (CIERRE_DIAS).
+ *   · Apertura: un folio en estatus APERTURA vence a las 48 h desde el registro (SLA_1ER_H).
+ *   · Seguimiento/término: sin cerrar, vence a los 7 días naturales = 168 h desde el registro (CIERRE_DIAS).
  */
 
 /* ---------------- Causa probable de vencimiento ---------------- */
@@ -36,17 +36,23 @@ function causaVencimiento_(humanas) {
 }
 
 /* ---------------- Folios reasignados ---------------- */
-/** Devuelve { folio: "detalle" } desde el archivo de reasignados. Se relee solo si el archivo cambió. */
-function leerReasignados_() {
+/**
+ * Devuelve { folio: "detalle" } desde el archivo de reasignados. Se relee solo si el archivo cambió.
+ * soloGuardado = true (al abrir el dashboard): usa lo ya guardado y no consulta Drive, para no
+ * hacer esperar al usuario; el activador horario lo mantiene al día.
+ */
+function leerReasignados_(soloGuardado) {
   const id = leerConfig_().REASIGNADOS_ID;
   if (!id) return {};
   if (_memo.reasig) return _memo.reasig;
-  const cache = CacheService.getScriptCache();
+  if (soloGuardado) {
+    try { const j = leerJson_('reasignados.json'); if (j && String(j.sello || '').indexOf(id + '|') === 0) return (_memo.reasig = j.mapa || {}); } catch (e) { }
+    return {};
+  }
   try {
     const f = DriveApp.getFileById(id);
     const sello = id + '|' + f.getLastUpdated().getTime();
-    const c = cache.get('reasig_sello');
-    if (c === sello) { const j = leerJson_('reasignados.json'); if (j && j.sello === sello) return (_memo.reasig = j.mapa); }
+    const j = leerJson_('reasignados.json'); if (j && j.sello === sello) return (_memo.reasig = j.mapa);
     let ss, tmpId = null;
     if (f.getMimeType() === MimeType.GOOGLE_SHEETS) ss = SpreadsheetApp.openById(id);
     else {
@@ -71,7 +77,6 @@ function leerReasignados_() {
       });
     } finally { if (tmpId) DriveApp.getFileById(tmpId).setTrashed(true); }
     escribirJson_('reasignados.json', { sello: sello, mapa: mapa });
-    cache.put('reasig_sello', sello, 3600);
     return (_memo.reasig = mapa);
   } catch (e) { console.warn('Reasignados: ' + e.message); return {}; }
 }
@@ -113,7 +118,7 @@ function alertaDiariaVencidos(prueba) {
 /** Ejecuta la alerta enviando todos los correos solo a ti (para revisar cómo se ven). */
 function probarAlertaDiaria() { const r = alertaDiariaVencidos(true); Logger.log(JSON.stringify(r)); return r; }
 
-/** Folios abiertos hoy con apertura o cierre vencido (sin cierres automáticos ni reasignados). */
+/** Folios abiertos hoy en APERTURA con más de 48 h o con más de 7 días sin cerrar (sin cierres automáticos ni reasignados). */
 function vencidosActuales_(cfg) {
   const ahora = dateANaive_(new Date()) / 60000;
   const limAp = Number(cfg.SLA_1ER_H) * 60, limC = Number(cfg.CIERRE_DIAS) * 1440;
@@ -129,13 +134,15 @@ function vencidosActuales_(cfg) {
       const est = s(r[2]);
       if (est === 'CIERRE' || est === 'CANCELADO' || (est === 'TERMINO' && cfg.TERMINO_COMO === 'cerrado')) return;
       const fReg = r[9]; if (fReg == null) return;
-      const trans = ahora - fReg; const conComent = r[10] != null || r[11] != null;
-      const cierreV = trans > limC, apV = !conComent && trans > limAp;
+      const trans = ahora - fReg;
+      // Reglas por estatus: APERTURA vence a las 48 h; sin cerrar, vence el día 8 (7 días desde el registro).
+      const enApertura = est === 'APERTURA';
+      const cierreV = trans > limC, apV = enApertura && trans > limAp;
       if (!cierreV && !apV) return;
       const cv = r[22] ? s(r[22][0]) : '';
       out.push({ folio: folio, ejec: s(r[1]) || '-', estatus: est, sucursal: s(r[4]), zona: s(r[3]), motivo: (r[15] || []).map(function (x) { return s(x[2]); }).filter(String).join(' · '),
         registro: Utilities.formatDate(new Date(fReg * 60000), 'UTC', 'dd/MM/yyyy HH:mm'), dias: Math.floor(trans / 1440),
-        tipo: cierreV ? (conComent ? 'Cierre vencido' : 'Cierre vencido y sin comentario') : 'Sin primer comentario (+48 h)', causa: cierreV ? cv : '' });
+        tipo: cierreV ? (enApertura ? 'Seguimiento vencido y sigue en APERTURA' : 'Seguimiento vencido (día ' + (Number(cfg.CIERRE_DIAS) + 1) + '+)') : 'En APERTURA más de ' + cfg.SLA_1ER_H + ' h', causa: cierreV ? cv : '' });
     });
   });
   out.sort(function (a, b) { return a.ejec.localeCompare(b.ejec) || b.dias - a.dias; });
@@ -157,7 +164,7 @@ function htmlCorreo_(intro, fs, conEjecutiva, url) {
   return '<div style="font-family:Arial;color:#1B2559"><p>' + esc(intro) + '</p>' + resumen +
     '<table style="border-collapse:collapse;font-family:Arial"><tr>' + (conEjecutiva ? '<th ' + th + '>Ejecutiva</th>' : '') + '<th ' + th + '>Folio</th><th ' + th + '>Registro</th><th ' + th + '>Días</th><th ' + th + '>Situación</th><th ' + th + '>Sucursal</th><th ' + th + '>Motivo</th><th ' + th + '>Causa probable</th></tr>' + filas + '</table>' +
     (fs.length > 400 ? '<p>… y ' + (fs.length - 400) + ' más. Consulta el dashboard.</p>' : '') +
-    '<p style="font-size:12px;color:#707EAE">Reglas: apertura = primer comentario en máximo 48 h desde el registro · cierre = máximo 7 días naturales desde el registro. No incluye cierres automáticos ni folios reasignados.' + (url ? ' <a href="' + url + '">Abrir dashboard</a>' : '') + '</p></div>';
+    '<p style="font-size:12px;color:#707EAE">Reglas: APERTURA = máximo 48 h en ese estatus desde el registro · seguimiento/término = máximo 7 días naturales desde el registro (el día 8 ya está vencido). No incluye cierres automáticos ni folios reasignados.' + (url ? ' <a href="' + url + '">Abrir dashboard</a>' : '') + '</p></div>';
 }
 
 /** Reconstruye todos los meses (necesario una vez tras actualizar, para agregar la causa de vencimiento). */
