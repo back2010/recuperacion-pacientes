@@ -1,0 +1,1341 @@
+<script>
+'use strict';
+/* =====================================================================
+ *  N\u00daCLEO DEL CLIENTE \u2014 utilidades, servidor, datos e indicadores
+ * ===================================================================== */
+const H = 3600e3, D = 864e5;
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => s == null ? '' : String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const norm = s => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+const nf = new Intl.NumberFormat('es-MX');
+const fmtN = v => v == null || isNaN(v) ? '\u2014' : nf.format(Math.round(v));
+const fmtP = (v, d = 1) => v == null || isNaN(v) ? '\u2014' : (v * 100).toFixed(d) + '%';
+const nw = t => `<span class="muted" style="white-space:nowrap;font-weight:500">${t}</span>`;
+const fmtH = v => v == null || isNaN(v) ? '\u2014' : (v < 48 ? v.toFixed(1) + ' h' : (v / 24).toFixed(1) + ' d');
+const fmt1 = v => v == null || isNaN(v) ? '\u2014' : v.toFixed(1);
+const fmtDias = h => h == null || isNaN(h) ? '\u2014' : (h / 24).toFixed(1) + ' d\u00edas';
+const MES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const MESL = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+// Hora "local ingenua": ms donde los campos UTC = reloj de pared del reporte.
+const nowNaive = () => { const d = new Date(); return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()); };
+const dt = ms => new Date(ms);
+const pad = n => String(n).padStart(2, '0');
+const fmtD = ms => ms == null ? '\u2014' : `${pad(dt(ms).getUTCDate())}/${pad(dt(ms).getUTCMonth() + 1)}/${dt(ms).getUTCFullYear()}`;
+const fmtDT = ms => ms == null ? '\u2014' : `${fmtD(ms)} ${pad(dt(ms).getUTCHours())}:${pad(dt(ms).getUTCMinutes())}`;
+const isoD = ms => ms == null ? '' : dt(ms).toISOString().slice(0, 10);
+const parseIsoD = s => { if (!s) return null; const [y, m, d] = String(s).slice(0, 10).split('-').map(Number); return Date.UTC(y, m - 1, d); };
+const dayStart = ms => { const d = dt(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+const median = a => { const b = a.filter(x => x != null && !isNaN(x)).sort((x, y) => x - y); if (!b.length) return null; const m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+const mean = a => { const b = a.filter(x => x != null && !isNaN(x)); return b.length ? b.reduce((s, x) => s + x, 0) / b.length : null; };
+const ratio = (a, b) => b ? a / b : null;
+const countBy = (arr, fn) => { const m = new Map(); for (const x of arr) { const k = fn(x); if (k == null || k === '') continue; m.set(k, (m.get(k) || 0) + 1); } return [...m.entries()].sort((a, b) => b[1] - a[1]); };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function toast(msg, ms = 3500) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms); }
+const mesKey = ms => { const d = dt(ms); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1); };
+const mesFrom = k => Date.UTC(+k.slice(0, 4), +k.slice(5, 7) - 1, 1);
+const mesLabel = k => MESL[+k.slice(5, 7) - 1] + ' ' + k.slice(0, 4);
+
+/* ---------- Periodos ---------- */
+function primerSabado(y) { const w = new Date(Date.UTC(y, 0, 1)).getUTCDay(); return Date.UTC(y, 0, 1 + ((6 - w + 7) % 7)); }
+/** Semana Salud Digna: s\u00e1bado a viernes; la S1 inicia el primer s\u00e1bado del a\u00f1o (31-oct\u20136-nov-2026 = S44). */
+function semanaSD(ms) { const d = dayStart(ms); let y = dt(d).getUTCFullYear(), a = primerSabado(y); if (d < a) { y--; a = primerSabado(y); } const w = Math.floor((d - a) / (7 * D)) + 1; return { y, w, start: a + (w - 1) * 7 * D }; }
+function periodOf(ms, tipo) {
+  const d = dt(ms), y = d.getUTCFullYear(), m = d.getUTCMonth();
+  if (tipo === 'mes') { const from = Date.UTC(y, m, 1), to = Date.UTC(y, m + 1, 1) - 1; return { key: `${y}-${pad(m + 1)}`, label: `${MES[m]} ${y}`, from, to }; }
+  if (tipo === 'quincena') { const q = d.getUTCDate() <= 15 ? 1 : 2; const from = q === 1 ? Date.UTC(y, m, 1) : Date.UTC(y, m, 16); const to = q === 1 ? Date.UTC(y, m, 16) - 1 : Date.UTC(y, m + 1, 1) - 1; return { key: `${y}-${pad(m + 1)}-Q${q}`, label: `Q${q} ${MES[m]} ${y}`, from, to }; }
+  const w = semanaSD(ms); const from = w.start, to = w.start + 7 * D - 1;
+  return { key: `${w.y}-S${pad(w.w)}`, label: `S${w.w} (${pad(dt(from).getUTCDate())} ${MES[dt(from).getUTCMonth()]}\u2013${pad(dt(to).getUTCDate())} ${MES[dt(to).getUTCMonth()]})`, from, to };
+}
+function periodsBetween(a, b, tipo) { const out = []; if (a == null || b == null) return out; let p = periodOf(a, tipo); while (p.from <= b) { out.push(p); p = periodOf(p.to + 1, tipo); } return out; }
+function prevPeriod(r) {
+  if (!r) return null;
+  if (r.tipo && r.tipo !== 'rango' && r.tipo !== 'todo') return { ...periodOf(r.from - 1, r.tipo), tipo: r.tipo };
+  const len = r.to - r.from + 1; return { from: r.from - len, to: r.from - 1, label: `${fmtD(r.from - len)} \u2013 ${fmtD(r.from - 1)}`, tipo: 'rango' };
+}
+
+/* ---------- Servidor ---------- */
+function call(fn, ...args) {
+  return new Promise((res, rej) => {
+    google.script.run.withSuccessHandler(r => res(typeof r === 'string' && /^[\[{n]/.test(r) ? JSON.parse(r) : r)).withFailureHandler(e => rej(e && e.message ? e : new Error(String(e))))[fn](...args);
+  });
+}
+
+/* ---------- Estado global ---------- */
+const S = { ses: null, cfg: null, folios: [], fMap: new Map(), loaded: new Set(), loading: null, view: 'dashboard', flt: null, charts: {}, sel: {}, plans: null, gest: new Map(), coordDe: new Map() };
+const CLS_LBL = { cerrado: 'Cerrado', cancelado: 'Cancelado', seguimiento: 'En seguimiento', pendiente: 'Pendiente (apertura)', termino: 'T\u00e9rmino', otro: 'Otro' };
+const CAL_LBL = { A: 'Gesti\u00f3n adecuada', P: 'Parcialmente adecuada', I: 'Gesti\u00f3n inadecuada', N: 'Informaci\u00f3n insuficiente' };
+const CAL_CLS = { A: 'ok', P: 'warn', I: 'bad', N: 'n' };
+const PROC_LBL = { P: 'Procedente', N: 'No procedente', D: 'No determinable' };
+const CRIT = [['C1', 'Claridad de la informaci\u00f3n'], ['C2', 'Identificaci\u00f3n del motivo'], ['C3', 'Investigaci\u00f3n realizada'], ['C4', 'Seguimiento documentado'], ['C5', 'Evidencia de acciones'], ['C6', 'Identificaci\u00f3n de causa ra\u00edz'], ['C7', 'Justificaci\u00f3n de la resoluci\u00f3n'], ['C8', 'Cumplimiento de tiempos'], ['C9', 'Claridad en el cierre']];
+const RECOM = {
+  C1: 'Registrar en cada gesti\u00f3n qu\u00e9 se hizo, con qui\u00e9n y qu\u00e9 resultado se obtuvo, con redacci\u00f3n completa.',
+  C2: 'Verificar que cada motivo tenga \u00e1rea y motivo correctos antes de trabajar el folio.',
+  C3: 'Documentar la investigaci\u00f3n: qu\u00e9 se revis\u00f3 (historial, sistema, cl\u00ednica, experto) y qu\u00e9 se encontr\u00f3.',
+  C4: 'Registrar cada intento de contacto con el paciente (llamada, WhatsApp, correo) y su resultado.',
+  C5: 'Dejar evidencia de las acciones (capturas, comprobantes, folios de devoluci\u00f3n o ticket).',
+  C6: 'Identificar y registrar la causa ra\u00edz (columna Causas o explicaci\u00f3n en la gesti\u00f3n).',
+  C7: 'Explicar en la \u00faltima gesti\u00f3n por qu\u00e9 se resuelve as\u00ed y qu\u00e9 se ofreci\u00f3 al paciente.',
+  C8: 'Hacer el primer contacto dentro de 48 h y cerrar dentro de la meta de tiempo.',
+  C9: 'Cerrar con clasificaci\u00f3n PROCEDE/NO PROCEDE y, si procede, registrar la acci\u00f3n correctiva.',
+};
+const ERROR_LBL = { C1: 'Informaci\u00f3n poco clara', C2: 'Motivo mal identificado', C3: 'Sin investigaci\u00f3n documentada', C4: 'Sin seguimiento documentado', C5: 'Sin evidencia de acciones', C6: 'Sin causa ra\u00edz', C7: 'Cierre sin justificaci\u00f3n', C8: 'Fuera de tiempo', C9: 'Cierre sin clasificaci\u00f3n clara' };
+function observacion(a) {
+  if (!a) return '';
+  const ok = [], par = [], no = [];
+  CRIT.forEach((c, i) => { const v = a.crit[i]; (v === 'C' ? ok : v === 'P' ? par : no).push(c[1].toLowerCase()); });
+  let s = (a.cal === 'A' ? 'Gesti\u00f3n adecuada' : a.cal === 'P' ? 'Gesti\u00f3n parcialmente adecuada' : a.cal === 'I' ? 'Gesti\u00f3n inadecuada' : 'Informaci\u00f3n insuficiente para evaluar') + '. ';
+  if (a.cal === 'N') return s + 'El historial no contiene gestiones de personas suficientes para evaluar la atenci\u00f3n.';
+  if (ok.length) s += 'Cumple: ' + ok.join(', ') + '. ';
+  if (par.length) s += 'Parcial: ' + par.join(', ') + '. ';
+  if (no.length) s += 'No cumple: ' + no.join(', ') + '. ';
+  if (a.proc === 'D') s += 'La procedencia no se puede confirmar con la informaci\u00f3n registrada.';
+  return s.trim();
+}
+
+/* ---------- Configuraci\u00f3n (viene de la hoja Config) ---------- */
+function cfgDesdeServidor(c) {
+  return {
+    slaFsH: +c.SLA_1ER_H, slaCH: +c.SLA_CIERRE_H, cierreDias: +c.CIERRE_DIAS || 7, tiempoRanking: '7D',
+    inicioCierre: 'registro', horario: 'naturales', semVerde: (+c.SEM_VERDE_PCT || 5) / 100, semAmarillo: (+c.SEM_AMARILLO_PCT || 15) / 100,
+    diasHabiles: String(c.DIAS_HABILES).split(',').map(Number), horaIni: +c.HORA_INI, horaFin: +c.HORA_FIN,
+    wP: +c.PESO_PROD, wR: +c.PESO_RES, wO: +c.PESO_OPO, prodVol: +c.PROD_VOL, minFolios: +c.MIN_FOLIOS, terminoComo: c.TERMINO_COMO === 'cerrado' ? 'cerrado' : 'abierto',
+    madurezDias: +c.MADUREZ_DIAS, corte: c.CORTE === 'archivo' ? 'archivo' : 'hoy', mesesIniciales: +c.MESES_INICIALES || 2,
+    al: { slaPrevPP: +c.AL_SLA_PREV_PP, slaCritPP: +c.AL_SLA_CRIT_PP, vencPrev: +c.AL_VENC_PREV, vencCrit: +c.AL_VENC_CRIT, sinSegPrev: +c.AL_SINSEG_PREV, sinSegCrit: +c.AL_SINSEG_CRIT, tcPrev: +c.AL_TC_PREV, tcCrit: +c.AL_TC_CRIT, pcPrev: +c.AL_PC_PREV, pcCrit: +c.AL_PC_CRIT, scSeg: +c.AL_SC_SEG, scPrev: +c.AL_SC_PREV },
+    aud: { adecuada: +c.AUD_ADECUADA, parcial: +c.AUD_PARCIAL, patronPct: +c.AUD_PATRON_PCT, patronMin: +c.AUD_PATRON_MIN },
+    raw: c,
+  };
+}
+const metaLbl = () => `\u2264${S.cfg.cierreDias} d\u00edas`;
+const apLbl = () => `\u2264${S.cfg.slaFsH} h`;
+
+/* ---------- Carga de datos por mes (desde la cach\u00e9 del servidor) ---------- */
+function clsOf(st) { switch (st) { case 'CIERRE': return 'cerrado'; case 'CANCELADO': return 'cancelado'; case 'SEGUIMIENTO': return 'seguimiento'; case 'APERTURA': return 'pendiente'; case 'TERMINO': return S.cfg.terminoComo === 'cerrado' ? 'cerrado' : 'termino'; default: return 'otro'; } }
+function decodificarMes(c) {
+  const d = c.d, s = i => i == null || i < 0 ? null : d[i], ms = m => m == null ? null : m * 60000;
+  for (const r of c.f) {
+    const fl = r[8];
+    const f = {
+      folio: String(r[0]), owner: s(r[1]) || '-', estatus: s(r[2]), zona: s(r[3]), sucursal: s(r[4]), division: s(r[5]), medio: s(r[6]), asunto: s(r[7]),
+      encuesta: !!(fl & 1), auto: !!(fl & 2), atClin: fl & 4 ? 'SI' : fl & 8 ? 'NO' : null, expTec: fl & 16 ? 'SI' : fl & 32 ? 'NO' : null,
+      fReg: ms(r[9]), fFs: ms(r[10]), fAp: ms(r[11]), fcMax: ms(r[12]), closerRaw: s(r[13]), authors: r[14].map(s),
+      rows: r[15].map(x => ({ area: s(x[0]), subest: s(x[1]), motivo: s(x[2]), clasif: s(x[3]) || null })),
+      impacto: s(r[16]) || null, nReasig: r[17], g: r[18].map(x => [s(x[0]), x[1] * D]), apAutor: s(r[20]), prevEjec: (r[21] || []).map(s), mes: c.mes,
+    };
+    f.cv = r[22] ? s(r[22][0]) : null; f.cvEvid = r[22] ? s(r[22][1]) : null;
+    const a = r[19]; f.aud = a ? { cal: a[0], score: a[1], proc: a[2], causa: s(a[3]), fuente: a[4], crit: a[5], oport: s(a[6]) } : null;
+    f.motivos = f.rows.map(x => x.motivo); f.areas = [...new Set(f.rows.map(x => x.area))];
+    if (!S.fMap.has(f.folio)) { S.folios.push(f); S.fMap.set(f.folio, f); }
+  }
+}
+/* ---------- Cach\u00e9 del navegador (IndexedDB) ----------
+   Cada mes se guarda con su versi\u00f3n (marca de tiempo de la \u00faltima reconstrucci\u00f3n en el servidor).
+   Al abrir, solo se piden al servidor los meses que no est\u00e1n o cambiaron. La llave incluye el correo
+   porque cada coordinador recibe \u00fanicamente los folios de su equipo. */
+const IDB = {
+  _db: null,
+  abrir() { return this._db || (this._db = new Promise((res, rej) => { try { const q = indexedDB.open('rp2_cache', 1); q.onupgradeneeded = () => q.result.createObjectStore('kv'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); } catch (e) { rej(e); } })); },
+  async get(k) { try { const db = await this.abrir(); return await new Promise(res => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); } catch (e) { return null; } },
+  async set(k, v) { try { const db = await this.abrir(); await new Promise(res => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = res; t.onabort = res; }); } catch (e) { } },
+};
+const llaveMes = m => S.ses.correo + '|' + m;
+async function asegurarMeses(lista) {
+  let falta = lista.filter(m => S.ses.meses.includes(m) && !S.loaded.has(m));
+  if (!falta.length) return false;
+  const ver = S.ses.versiones || {};
+  // 1) lo que el navegador ya tiene en la versi\u00f3n vigente: instant\u00e1neo
+  const locales = await Promise.all(falta.map(m => IDB.get(llaveMes(m))));
+  falta.forEach((m, i) => { const x = locales[i]; if (x && x.ver && String(x.ver) === String(ver[m])) { decodificarMes(x.c); S.loaded.add(m); } });
+  falta = falta.filter(m => !S.loaded.has(m));
+  // 2) lo dem\u00e1s se pide al servidor y se guarda para la pr\u00f3xima vez
+  if (falta.length) {
+    overlay(`Cargando ${falta.map(mesLabel).join(', ')}\u2026`);
+    try {
+      for (let i = 0; i < falta.length; i += 3) {
+        const res = await call('apiMeses', falta.slice(i, i + 3));
+        res.forEach(c => { decodificarMes(c); S.loaded.add(c.mes); IDB.set(llaveMes(c.mes), { ver: c.ver || ver[c.mes] || null, c }); });
+        falta.slice(i, i + 3).forEach(m => S.loaded.add(m));
+      }
+    } finally { overlay(null); }
+  }
+  prepararFolios();
+  return true;
+}
+function prepararFolios() {
+  for (const f of S.folios) {
+    f.cls = clsOf(f.estatus);
+    f.fCierre = f.cls === 'cerrado' ? f.fcMax : null;
+    f.closer = f.cls === 'cerrado' ? (f.closerRaw || f.owner) : null;
+    f.apDias = f.fAp != null ? Math.max(0, Math.round((f.fAp - dayStart(f.fReg)) / D)) : null;
+    f.coord = S.coordDe.get(f.owner) || null;
+    const ra = (S.ses.reasignados || {})[f.folio]; f.reasig = !!ra; f.reasigDet = ra || null;
+  }
+  S.gest = new Map();
+  for (const f of S.folios) { if (f.auto) continue; for (const [a, d] of f.g) { if (!S.gest.has(a)) S.gest.set(a, new Map()); const g = S.gest.get(a); if (!g.has(d)) g.set(d, []); g.get(d).push(f); } }
+  computeSLA();
+}
+function cutoff() { let mx = 0; for (const f of S.folios) for (const k of ['fReg', 'fFs', 'fcMax']) if (f[k] != null && f[k] > mx) mx = f[k]; return mx || nowNaive(); }
+function durH(a, b) {
+  if (a == null || b == null) return null; if (b < a) return 0;
+  const c = S.cfg; if (c.horario !== 'habiles') return (b - a) / H;
+  let t = 0; for (let d = dayStart(a); d <= b; d += D) { if (!c.diasHabiles.includes(dt(d).getUTCDay())) continue; const s = Math.max(a, d + c.horaIni * H), e = Math.min(b, d + c.horaFin * H); if (e > s) t += e - s; }
+  return t / H;
+}
+/** Estados de tiempo por folio (reglas nov-2026, horas naturales desde la Fecha Registro):
+ *  Apertura: primer comentario \u2264 48 h (Fecha de primer seguimiento; si falta, primer comentario del historial).
+ *  Cierre:   cierre \u2264 7 d\u00edas (168 h). Abierto con m\u00e1s de 7 d\u00edas = vencido. */
+function computeSLA() {
+  const c = S.cfg; S.cutoffMs = cutoff(); const now = c.corte === 'archivo' ? S.cutoffMs : nowNaive();
+  const lim = c.cierreDias * 24;
+  for (const f of S.folios) {
+    f.fApert = f.fFs != null ? f.fFs : f.fAp;
+    f.hFs = f.fApert != null ? durH(f.fReg, f.fApert) : null;
+    f.cStart = f.fReg; f.cStartSrc = 'registro';
+    f.hC = f.fCierre != null ? durH(f.fReg, f.fCierre) : null;
+    f.open = f.cls !== 'cerrado' && f.cls !== 'cancelado';
+    f.elapsed = f.open ? durH(f.fReg, now) : null;
+    f.elapsedReg = f.elapsed;
+    if (f.cls === 'cancelado') { f.slaFs = f.slaC = f.slaC7 = 'na'; continue; }
+    if (f.hFs != null) f.slaFs = f.hFs <= c.slaFsH ? 'cumple' : 'fuera';
+    else if (f.cls === 'cerrado') f.slaFs = f.hC != null && f.hC <= c.slaFsH ? 'cumple' : 'fuera';
+    else f.slaFs = f.elapsed > c.slaFsH ? 'vencido' : 'plazo';
+    if (f.cls === 'cerrado') f.slaC7 = f.hC != null && f.hC <= lim ? 'cumple' : 'fuera';
+    else f.slaC7 = f.elapsed > lim ? 'vencido' : 'plazo';
+    f.slaC = f.slaC7;
+  }
+}
+const slaMeta = f => f.slaC7;
+/** Problemas de un folio (para la ficha de la ejecutiva y la consulta). */
+function problemas(f) {
+  const p = [];
+  if (f.slaFs === 'fuera') p.push(['Apertura tarde (+48 h)', 'warn']); else if (f.slaFs === 'vencido') p.push(['Sin primer comentario (+48 h)', 'bad']);
+  if (f.slaC7 === 'fuera') p.push(['Cerrado tarde (+7 d\u00edas)', 'warn']); else if (f.slaC7 === 'vencido') p.push(['Abierto vencido (+7 d\u00edas)', 'bad']);
+  if (f.aud) {
+    if (f.aud.cal === 'I' || f.aud.cal === 'N') p.push([f.aud.cal === 'N' ? 'Gesti\u00f3n con informaci\u00f3n insuficiente' : 'Gesti\u00f3n inadecuada', 'bad']);
+    if (f.aud.crit[2] === 'N') p.push(['Sin investigaci\u00f3n', 'bad']);
+    if (f.aud.crit[3] === 'N') p.push(['Seguimiento deficiente', 'warn']);
+    if (f.aud.crit[5] === 'N') p.push(['Sin causa ra\u00edz', 'bad']);
+  }
+  return p;
+}
+
+/* ---------- Filtros y universo ---------- */
+function inR(ms, r) { return ms != null && (!r || (ms >= r.from && ms <= r.to)); }
+/** Ejecutivas visibles (seg\u00fan equipos de coordinadores; el servidor ya filtr\u00f3 los datos). */
+function team() {
+  let t = S.ses.ejecutivas || [...new Set(S.ses.coordinadores.flatMap(c => c.ejecutivas))];
+  if (S.flt && S.flt.coord) { const c = S.ses.coordinadores.find(x => x.correo === S.flt.coord); t = c ? c.ejecutivas : []; }
+  if (!t.length && S.ses.rol === 'ADMIN') t = [...new Set(S.folios.filter(f => !f.auto).map(f => f.owner))].filter(x => x && x !== '-');
+  return [...new Set(t)].sort();
+}
+function uniOk(f, uni) { switch (uni) { case 'gestion': return !f.auto && !f.reasig; case 'reasig': return f.reasig; case 'todos': return true; case 'otros': return !f.encuesta; case 'encuesta': return f.encuesta; case 'encManual': return f.encuesta && !f.auto; case 'encAuto': return f.encuesta && f.auto; default: return true; } }
+function geoOk(f) { const fl = S.flt; return (!fl.zona || f.zona === fl.zona) && (!fl.suc || f.sucursal === fl.suc) && (!fl.coord || f.coord === fl.coord); }
+function baseFilter(opt = {}) { const fl = S.flt; const uni = opt.universo ?? fl.universo; return f => (opt.ejec ? f.owner === opt.ejec : (!fl.ejec || f.owner === fl.ejec)) && geoOk(f) && uniOk(f, uni); }
+function cohort(range, opt) { const bf = baseFilter(opt); return S.folios.filter(f => bf(f) && inR(f.fReg, range)); }
+function closedIn(range, opt) { const bf = baseFilter(opt); return S.folios.filter(f => bf(f) && f.fCierre != null && inR(f.fCierre, range)); }
+
+/* ---------- Indicadores ---------- */
+function metrics(fs) {
+  const m = { n: fs.length, regs: 0, cerr: 0, pend: 0, seg: 0, term: 0, canc: 0, otro: 0, proc: 0, noproc: 0, sindef: 0, sinclas: 0, encN: 0 };
+  const hfs = [], hc = []; const k = { fsOk: 0, fsBad: 0, fsVen: 0, fsPl: 0, cOk: 0, cBad: 0, cVen: 0, cPl: 0, c7Ok: 0, c7Bad: 0, c7Ven: 0, c7Pl: 0, atc: 0, ext: 0, auto: 0 };
+  const inc = (pre, st) => { if (st === 'cumple') k[pre + 'Ok']++; else if (st === 'fuera') k[pre + 'Bad']++; else if (st === 'vencido') k[pre + 'Ven']++; else if (st === 'plazo') k[pre + 'Pl']++; };
+  const aud = { n: 0, A: 0, P: 0, I: 0, N: 0, crit: Array(9).fill(0), critP: Array(9).fill(0), score: [] };
+  for (const f of fs) {
+    m.regs += f.rows.length; if (f.auto) k.auto++; if (f.encuesta) m.encN++;
+    if (f.cls === 'cerrado') m.cerr++; else if (f.cls === 'pendiente') m.pend++; else if (f.cls === 'seguimiento') m.seg++; else if (f.cls === 'termino') m.term++; else if (f.cls === 'cancelado') m.canc++; else m.otro++;
+    for (const r of f.rows) { if (r.clasif === 'PROCEDE') m.proc++; else if (r.clasif === 'NO PROCEDE') m.noproc++; else if (r.clasif === 'SIN DEFINIR') m.sindef++; else m.sinclas++; }
+    if (f.hFs != null) hfs.push(f.hFs); if (f.hC != null) hc.push(f.hC);
+    inc('fs', f.slaFs); inc('c', f.slaC); inc('c7', f.slaC7);
+    if (f.atClin === 'SI') k.atc++; if (f.expTec === 'SI') k.ext++;
+    if (f.aud) { aud.n++; aud[f.aud.cal]++; aud.score.push(f.aud.score); for (let i = 0; i < 9; i++) { if (f.aud.crit[i] === 'N') aud.crit[i]++; else if (f.aud.crit[i] === 'P') aud.critP[i]++; } }
+  }
+  Object.assign(m, k);
+  m.eleg = m.n - m.canc; m.abiertos = m.pend + m.seg + m.term + m.otro;
+  m.pctCierre = ratio(m.cerr, m.eleg); m.pctProc = ratio(m.proc, m.proc + m.noproc);
+  m.avgFs = mean(hfs); m.avgC = mean(hc); m.medC = median(hc); m.medFs = median(hfs);
+  m.slaFs = ratio(k.fsOk, k.fsOk + k.fsBad + k.fsVen);
+  m.slaC = ratio(k.cOk, k.cOk + k.cBad + k.cVen); m.slaC7 = ratio(k.c7Ok, k.c7Ok + k.c7Bad + k.c7Ven);
+  const meta = S.cfg.tiempoRanking === '7D' ? 'c7' : 'c';
+  m.cerrEnT = k[meta + 'Ok']; m.cerrFuera = k[meta + 'Bad']; m.vencidos = k[meta + 'Ven']; m.pendPlazo = k[meta + 'Pl'];
+  m.cumpT = ratio(m.cerrEnT, m.cerr + m.vencidos);
+  m.fuera48 = k.cBad + k.cVen;
+  // Desglose pedido: aperturas y cierres en tiempo / vencidos / a\u00fan a tiempo
+  m.apOk = k.fsOk; m.apTarde = k.fsBad; m.apSinCom = k.fsVen; m.apVenc = k.fsBad + k.fsVen; m.apPl = k.fsPl;
+  m.cOkT = k.c7Ok; m.cTarde = k.c7Bad; m.cAbVen = k.c7Ven; m.cVenc = k.c7Bad + k.c7Ven; m.cPl = k.c7Pl;
+  m.pctVencAp = ratio(m.apVenc, m.apOk + m.apVenc); m.pctVencC = ratio(m.cVenc, m.cOkT + m.cVenc);
+  m.avgCd = m.avgC != null ? m.avgC / 24 : null; m.sdCd = hc.length > 1 ? sdev(hc) / 24 : null;
+  aud.pA = ratio(aud.A, aud.n); aud.pP = ratio(aud.P, aud.n); aud.pI = ratio(aud.I, aud.n); aud.pN = ratio(aud.N, aud.n); aud.avg = mean(aud.score);
+  m.aud = aud;
+  return m;
+}
+
+function sdev(a) { const v = a.filter(x => x != null && !isNaN(x)); if (v.length < 2) return null; const mu = v.reduce((x, y) => x + y, 0) / v.length; return Math.sqrt(v.reduce((x, y) => x + (y - mu) ** 2, 0) / (v.length - 1)); }
+/** Sem\u00e1foro de vencidos: verde \u2264 SEM_VERDE_PCT y sin abiertos vencidos; amarillo \u2264 SEM_AMARILLO_PCT; rojo arriba. */
+function semVenc(p, abiertosVenc) { if (p == null) return 'na'; const c = S.cfg; if (p <= c.semVerde && !abiertosVenc) return 'ok'; if (p <= c.semAmarillo) return 'warn'; return 'bad'; }
+/** Indicadores y ranking por ejecutiva. Ver Metodolog\u00eda para las f\u00f3rmulas. */
+function execStats(range, opt = {}) {
+  const t = opt.lista || team(); const out = [];
+  const uni = opt.universo ?? S.flt.universo;
+  const coh = S.folios.filter(f => !f.auto && (uni === 'reasig' || !f.reasig) && uniOk(f, uni) && inR(f.fReg, range) && geoOk(f));
+  const closedR = S.folios.filter(f => !f.auto && (uni === 'reasig' || !f.reasig) && uniOk(f, uni) && f.fCierre != null && inR(f.fCierre, range) && geoOk(f));
+  const byOwner = new Map(); for (const f of coh) { if (!byOwner.has(f.owner)) byOwner.set(f.owner, []); byOwner.get(f.owner).push(f); }
+  for (const e of t) {
+    const own = byOwner.get(e) || [];
+    const m = metrics(own);
+    m.ejec = e; m.coord = S.coordDe.get(e) || null; m.asign = own.length;
+    m.gestionados = coh.filter(f => f.authors.includes(e)).length;
+    m.cerrAcred = coh.filter(f => f.cls === 'cerrado' && f.closer === e).length;
+    m.cerrAcredT = coh.filter(f => f.cls === 'cerrado' && f.closer === e && slaMeta(f) === 'cumple').length;
+    m.cierresPeriodo = closedR.filter(f => f.closer === e).length;
+    let gest = 0; const gm = S.gest.get(e); if (gm) for (const [d, arr] of gm) if (inR(d, range)) for (const x of arr) if (uniOk(x, uni)) gest++;
+    m.gestiones = gest;
+    m.reasigIn = own.filter(f => f.nReasig).length;
+    // carga diaria: folios distintos con gesti\u00f3n suya por d\u00eda (solo d\u00edas con actividad)
+    const porDia = []; if (gm) for (const [d, arr] of gm) if (inR(d, range)) { const n = new Set(arr.filter(x => uniOk(x, uni)).map(x => x.folio)).size; if (n) porDia.push(n); }
+    m.diasActivos = porDia.length; m.cargaProm = mean(porDia); m.cargaSd = porDia.length > 1 ? sdev(porDia) : null;
+    m.semC = semVenc(m.pctVencC, m.cAbVen); m.semAp = semVenc(m.pctVencAp, m.apSinCom);
+    const encAll = S.folios.filter(f => f.encuesta && f.owner === e && inR(f.fReg, range) && geoOk(f));
+    m.enc = { total: encAll.length, auto: encAll.filter(f => f.auto).length, manual: encAll.filter(f => !f.auto).length, manualCerr: encAll.filter(f => !f.auto && f.cls === 'cerrado').length };
+    m.motivos = countBy(own.flatMap(f => f.motivos), x => x).slice(0, 8);
+    m.areasTop = countBy(own.flatMap(f => f.areas), x => x).slice(0, 8);
+    m.causas = countBy(own.filter(f => f.aud), f => f.aud.causa).slice(0, 8);
+    m.nivel = m.eleg >= 100 ? 'Alto' : m.eleg >= S.cfg.minFolios ? 'Medio' : m.eleg > 0 ? 'Insuficiente' : 'Sin datos';
+    out.push(m);
+  }
+  const ok = out.filter(m => m.nivel === 'Alto' || m.nivel === 'Medio');
+  const maxC = Math.max(1, ...ok.map(m => m.cerrAcredT));
+  const c = S.cfg;
+  for (const m of out) {
+    if (!(m.nivel === 'Alto' || m.nivel === 'Medio')) { m.sP = m.sR = m.sO = m.score = null; continue; }
+    const vol = m.cerrAcredT / maxC, cov = Math.min(1, ratio(m.gestionados, m.asign) ?? 0);
+    m.sP = 100 * ((c.prodVol / 100) * vol + (1 - c.prodVol / 100) * cov);
+    m.sR = m.pctCierre != null ? 100 * m.pctCierre : null;
+    m.sO = (m.slaFs != null && m.cumpT != null) ? 100 * (m.slaFs + m.cumpT) / 2 : null;
+    m.score = (m.sP != null && m.sR != null && m.sO != null) ? (c.wP * m.sP + c.wR * m.sR + c.wO * m.sO) / (c.wP + c.wR + c.wO) : null;
+  }
+  return out;
+}
+
+/** M\u00e9tricas del periodo anterior; si no hay datos de ese periodo devuelve un objeto vac\u00edo (sin comparativo). */
+const NULLM = new Proxy({}, { get: (t, k) => k === 'aud' ? NULLM : null });
+function hayDatos(r) { const out = []; for (let k = mesKey(r.from); mesFrom(k) <= r.to;) { out.push(k); const d = dt(mesFrom(k)); k = mesKey(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)); } return out.some(m => S.ses.meses.includes(m)); }
+function metricsPrev(p, opt) { return p && hayDatos(p) ? metrics(cohort(p, opt)) : NULLM; }
+function maturity(r) { if (!r) return { ok: true }; const days = (nowNaive() - r.to) / D; return { ok: days >= S.cfg.madurezDias, days }; }
+/** Alertas por ejecutiva: tiempos, pendientes, deterioro y patrones de auditor\u00eda. */
+function computeAlerts(cur, prev) {
+  const a = S.cfg.al, au = S.cfg.aud; const A = []; const mat = maturity(cur).ok;
+  const C = execStats(cur), P = prev && hayDatos(prev) ? execStats(prev) : [];
+  const valid = C.filter(m => m.nivel === 'Alto' || m.nivel === 'Medio');
+  const medFs = median(valid.map(m => m.slaFs)), medT = median(valid.map(m => m.cumpT));
+  for (const m of C) {
+    const p = P.find(x => x.ejec === m.ejec); const pv = p && (p.nivel === 'Alto' || p.nivel === 'Medio');
+    const push = (lvl, ind, dato, rec, tipo = 'Tiempos') => A.push({ lvl, ejec: m.ejec, coord: m.coord, ind, dato, rec, tipo });
+    const enough = m.nivel === 'Alto' || m.nivel === 'Medio';
+    if (enough && m.cumpT != null && medT != null) { const g = (medT - m.cumpT) * 100; if (g >= a.slaCritPP) push('critica', `Cumplimiento de cierre ${metaLbl()}`, `${fmtP(m.cumpT)} vs mediana del equipo ${fmtP(medT)} (\u2212${g.toFixed(1)} pp)`, 'Revisar con la ejecutiva los cierres fuera de tiempo; identificar si el retraso est\u00e1 en espera de cl\u00ednica o experto t\u00e9cnico y acordar cierre en bloques diarios.'); else if (g >= a.slaPrevPP) push('preventiva', `Cumplimiento de cierre ${metaLbl()}`, `${fmtP(m.cumpT)} vs mediana ${fmtP(medT)} (\u2212${g.toFixed(1)} pp)`, 'Monitorear cierres diarios y priorizar folios pr\u00f3ximos a vencer.'); }
+    if (enough && m.slaFs != null && medFs != null) { const g = (medFs - m.slaFs) * 100; if (g >= a.slaCritPP) push('critica', '1er comentario en 48 h', `${fmtP(m.slaFs)} vs mediana ${fmtP(medFs)} (\u2212${g.toFixed(1)} pp)`, 'Asegurar primer contacto el mismo d\u00eda de asignaci\u00f3n; revisar distribuci\u00f3n de carga y horario de llamadas.'); else if (g >= a.slaPrevPP) push('preventiva', '1er comentario en 48 h', `${fmtP(m.slaFs)} vs mediana ${fmtP(medFs)} (\u2212${g.toFixed(1)} pp)`, 'Reforzar el primer contacto dentro de las primeras 24 h.'); }
+    if (m.vencidos > 0) push('critica', 'Folios abiertos vencidos (+7 d\u00edas)', `${m.vencidos} folio(s) abiertos con m\u00e1s de ${S.cfg.cierreDias} d\u00edas desde el registro`, 'Ninguna ejecutiva debe tener folios vencidos: atenderlos hoy, cerrar los que ya tienen respuesta y escalar los que dependen de cl\u00ednica.');
+    if (false && m.vencidos >= a.vencCrit) push('critica', 'Folios que contin\u00faan vencidos', `${m.vencidos} folios abiertos fuera de ${metaLbl()}`, 'Depurar la bandeja: revisar uno a uno los vencidos, cerrar los que ya tienen respuesta y escalar los que dependen de cl\u00ednica.'); else if (m.vencidos >= a.vencPrev) push('preventiva', 'Folios que contin\u00faan vencidos', `${m.vencidos} folios abiertos fuera de ${metaLbl()}`, 'Programar bloque de depuraci\u00f3n de pendientes.');
+    if (m.fsVen > 0) push('critica', 'Sin primer comentario (+48 h)', `${m.fsVen} folio(s) sin comentario con m\u00e1s de ${S.cfg.slaFsH} h desde el registro`, 'Contactar hoy a estos pacientes; si la carga lo impide, redistribuir folios.');
+    if (false && m.fsVen >= a.sinSegCrit) push('critica', 'Sin primer comentario', `${m.fsVen} folios sin comentario y con m\u00e1s de ${S.cfg.slaFsH} h`, 'Contactar hoy a estos pacientes; si la carga lo impide, redistribuir folios.'); else if (m.fsVen >= a.sinSegPrev) push('preventiva', 'Sin primer comentario', `${m.fsVen} folios sin comentario vencidos`, 'Verificar folios sin contacto y registrar gesti\u00f3n.');
+    if (enough && pv && mat) {
+      if (m.avgC != null && p.avgC) { const inc = (m.avgC / p.avgC - 1) * 100; if (inc >= a.tcCrit) push('critica', 'Tiempo promedio de cierre', `${fmtH(m.avgC)} vs ${fmtH(p.avgC)} periodo anterior (+${inc.toFixed(0)}%)`, 'Analizar qu\u00e9 motivos o \u00e1reas alargan el cierre y acordar plan de reducci\u00f3n.'); else if (inc >= a.tcPrev) push('preventiva', 'Tiempo promedio de cierre', `${fmtH(m.avgC)} vs ${fmtH(p.avgC)} (+${inc.toFixed(0)}%)`, 'Dar seguimiento semanal al tiempo de cierre.'); }
+      if (m.pctCierre != null && p.pctCierre != null) { const d = (p.pctCierre - m.pctCierre) * 100; if (d >= a.pcCrit) push('critica', '% de cierre', `${fmtP(m.pctCierre)} vs ${fmtP(p.pctCierre)} (\u2212${d.toFixed(1)} pp)`, 'Sesi\u00f3n de acompa\u00f1amiento: revisar casos abiertos y bloqueos para el cierre.'); else if (d >= a.pcPrev) push('preventiva', '% de cierre', `${fmtP(m.pctCierre)} vs ${fmtP(p.pctCierre)} (\u2212${d.toFixed(1)} pp)`, 'Revisar avance de cierres a mitad de periodo.'); }
+      if (m.score != null && p.score != null) { const d = p.score - m.score; if (d >= a.scPrev) push('preventiva', 'Deterioro de desempe\u00f1o general', `Puntaje ${fmt1(m.score)} vs ${fmt1(p.score)} (\u2212${d.toFixed(1)})`, 'Revisar las tres dimensiones con la ejecutiva y documentar plan de acci\u00f3n.'); else if (d >= a.scSeg) push('seguimiento', 'Deterioro de desempe\u00f1o general', `Puntaje ${fmt1(m.score)} vs ${fmt1(p.score)} (\u2212${d.toFixed(1)})`, 'Observar tendencia en el siguiente periodo.'); }
+    }
+    // Patrones repetitivos de calidad (auditor\u00eda)
+    if (m.aud.n >= au.patronMin) {
+      CRIT.forEach(([id], i) => { const pct = m.aud.crit[i] / m.aud.n * 100; if (pct >= au.patronPct) push(pct >= au.patronPct + 20 ? 'critica' : 'preventiva', 'Patr\u00f3n: ' + ERROR_LBL[id], `${m.aud.crit[i]} de ${m.aud.n} folios auditados (${pct.toFixed(0)}%) no cumplen "${CRIT[i][1]}"`, RECOM[id], 'Calidad'); });
+      const pi = (m.aud.I + m.aud.N) / m.aud.n * 100; if (pi >= au.patronPct) push('critica', 'Gestiones inadecuadas recurrentes', `${m.aud.I + m.aud.N} de ${m.aud.n} folios (${pi.toFixed(0)}%) con gesti\u00f3n inadecuada o sin informaci\u00f3n suficiente`, 'Revisar con la ejecutiva 5 folios de ejemplo y acordar est\u00e1ndar m\u00ednimo de registro.', 'Calidad');
+    }
+    if (m.nivel === 'Insuficiente') push('seguimiento', 'Informaci\u00f3n insuficiente', `${m.eleg} folios elegibles (m\u00ednimo ${S.cfg.minFolios})`, 'No se califica; validar si la ejecutiva tuvo carga parcial en el periodo.', 'Datos');
+  }
+  const ord = { critica: 0, preventiva: 1, seguimiento: 2 };
+  return A.sort((x, y) => ord[x.lvl] - ord[y.lvl] || x.ejec.localeCompare(y.ejec));
+}
+
+/* =====================================================================
+ *  VISTAS 1 \u2014 navegaci\u00f3n, filtros, componentes, dashboard, ranking,
+ *  coordinadores y alertas
+ * ===================================================================== */
+const UNI_LBL = { gestion: 'Gesti\u00f3n de ejecutivas (sin cierres autom\u00e1ticos ni reasignados)', reasig: 'Solo folios reasignados', otros: 'Sin encuesta digital', encuesta: 'Solo encuesta digital', encManual: 'Encuesta digital \u00b7 gesti\u00f3n manual', encAuto: 'Encuesta digital \u00b7 cierre autom\u00e1tico', todos: 'Todos (incluye cierres autom\u00e1ticos)' };
+const VISTAS = {
+  dashboard: ['Dashboard general', 'analisis'], vencimientos: ['Vencimientos (aperturas y cierres)', 'analisis'], ranking: ['Ranking de ejecutivas', 'analisis'], coordinadores: ['Desempe\u00f1o por coordinador', 'analisis'],
+  auditoria: ['Auditor\u00eda de folios', 'calidad'], individual: ['Reporte individual', 'calidad'], causas: ['An\u00e1lisis de causas ra\u00edz', 'calidad'], alertas: ['Alertas y oportunidades', 'calidad'],
+  zonas: ['Zona \u00b7 sucursal \u00b7 \u00e1rea', 'operacion'], temporal: ['An\u00e1lisis temporal', 'operacion'], folios: ['Consulta de folios', 'operacion'],
+  reporte: ['Reporte gerencial', 'gestion'], planes: ['Planes de acci\u00f3n', 'gestion'], bonos: ['Bonos', 'gestion'],
+  admin: ['Usuarios, equipos y datos', 'sistema'], metodo: ['Metodolog\u00eda', 'sistema'],
+};
+const ICON = { vencimientos: 'running_with_errors', dashboard: 'home', ranking: 'leaderboard', coordinadores: 'groups', auditoria: 'fact_check', individual: 'person', causas: 'troubleshoot', alertas: 'notifications_active', zonas: 'location_on', temporal: 'timeline', folios: 'manage_search', reporte: 'description', planes: 'checklist', bonos: 'payments', admin: 'settings', metodo: 'functions' };
+const SECC = { analisis: 'An\u00e1lisis', calidad: 'Calidad y auditor\u00eda', operacion: 'Operaci\u00f3n', gestion: 'Gesti\u00f3n', sistema: 'Sistema' };
+
+/** "miguel.barraza@salud-digna.org" \u2192 { corto: 'Miguel', completo: 'Miguel Barraza' } */
+function nombreDeCorreo(c) {
+  const p = String(c || '').split('@')[0].split(/[._\-]+/).filter(x => x && !/^\d+$/.test(x)).map(x => x.charAt(0).toUpperCase() + x.slice(1).toLowerCase());
+  return { corto: p[0] || 'Usuario', completo: p.slice(0, 2).join(' ') || 'Usuario' };
+}
+function iniciales(t) { return String(t || '?').split(/[\s@.]+/).filter(Boolean).slice(0, 2).map(x => x[0]).join('').toUpperCase(); }
+function renderNav() {
+  let html = '', sec = '';
+  for (const [k, [lbl, s]] of Object.entries(VISTAS)) {
+    if (k === 'admin' && S.ses.rol !== 'ADMIN') continue;
+    if (s !== sec) { html += `<div class="sec">${SECC[s]}</div>`; sec = s; }
+    html += `<button data-v="${k}"><span class="ms">${ICON[k]}</span><span class="t">${lbl}</span></button>`;
+  }
+  $('#nav').innerHTML = html;
+  $$('#nav button').forEach(b => b.onclick = () => { go(b.dataset.v); document.body.classList.remove('menu-on'); });
+  const admin = S.ses.rol === 'ADMIN';
+  const yo = nombreDeCorreo(S.ses.correo);
+  $('#hola').textContent = 'Hola ' + yo.corto;
+  $('#avName').textContent = yo.corto;
+  $('#who').innerHTML = `<div class="av">${esc(iniciales(yo.completo))}</div><b>${esc(yo.completo)}</b><span>${admin ? 'Administrador \u00b7 todos los equipos' : 'Coordinador \u00b7 ' + (S.ses.ejecutivas || []).length + ' ejecutivas'}</span><span>Datos al ${esc(S.ses.ultimaActualizacion || '\u2014')}</span>${admin ? '<button onclick="sincronizarAhora()">Sincronizar Excel</button>' : '<button onclick="go(\'metodo\')">Ver metodolog\u00eda</button>'}`;
+  $('#avIni').textContent = iniciales(yo.completo);
+  const o = S.ses.origen || {};
+  $('#avDrop').innerHTML = `<div class="hello">Hola, ${esc(yo.corto)}</div>
+    <div class="muted small" style="margin-bottom:8px">${esc(S.ses.correo)} \u00b7 ${admin ? 'ADMIN' : 'COORDINADOR'}</div>
+    <div class="muted small" style="margin-bottom:10px">Excel: <b style="color:var(--ink)">${esc(o.nombre || '\u2014')}</b><br>Modificado ${esc(o.modificado || '\u2014')} \u00b7 le\u00eddo ${esc(o.leido || '\u2014')}</div>
+    ${admin && S.ses.sheetUrl ? `<a class="lnk" href="${esc(S.ses.sheetUrl)}" target="_blank">Abrir base en Google Sheets</a>` : ''}
+    ${admin ? '<a class="lnk" onclick="sincronizarAhora()">Sincronizar Excel ahora</a><a class="lnk" onclick="go(\'admin\')">Usuarios, equipos y datos</a>' : ''}
+    <a class="lnk" onclick="go('metodo')">Metodolog\u00eda</a>`;
+}
+function setNavTitle(t) { const x = $('#navTitle'); if (x) x.textContent = String(t).replace(/<[^>]+>/g, ''); }
+/** Chips bajo el t\u00edtulo: periodo, comparativo, alcance y fecha de datos (como el tablero de ventas). */
+function actualizarChips() {
+  const el = $('#nbChips'); if (!el || !S.flt) return; const r = curRange(); if (!r) { el.innerHTML = ''; return; }
+  const p = prevPeriod(r); const t = team();
+  const sucs = new Set(S.folios.filter(f => geoOk(f) && inR(f.fReg, r)).map(f => f.sucursal)).size;
+  const chip = (ic, l, v) => `<span class="nbchip"><span class="ms">${ic}</span>${l} <b>${esc(v)}</b></span>`;
+  el.innerHTML = chip('calendar_today', 'Periodo', r.tipo === 'mes' ? MESL[+r.key.slice(5, 7) - 1].replace(/^./, c => c.toUpperCase()) + ' ' + r.key.slice(0, 4) : r.label)
+    + chip('compare_arrows', 'Contra', p ? p.label : '\u2014')
+    + (S.flt.ejec ? chip('person', '', S.flt.ejec.split(' ').slice(0, 2).join(' ')) : chip('groups', '', t.length + (t.length === 1 ? ' ejecutiva' : ' ejecutivas'))) + chip('location_on', '', sucs + ' sucursales')
+    + chip('schedule', 'Datos al', S.ses.ultimaActualizacion || '\u2014')
+    + filtrosChip();
+}
+/* Filtros plegables: en pantallas chicas empiezan cerrados; el chip muestra cu\u00e1ntos hay activos */
+function filtrosActivos() { const f = S.flt; return [f.coord, f.ejec, f.zona, f.suc].filter(Boolean).length + (f.universo && f.universo !== 'gestion' ? 1 : 0); }
+function filtrosChip() {
+  const n = filtrosActivos(), abierto = !document.body.classList.contains('flt-off');
+  return `<button class="nbchip btnchip ${n ? 'act' : ''}" onclick="toggleFiltros()"><span class="ms">tune</span>Filtros <b>${n ? n + (n === 1 ? ' activo' : ' activos') : 'ninguno'}</b><span class="ms">${abierto ? 'expand_less' : 'expand_more'}</span></button>`;
+}
+function toggleFiltros() {
+  document.body.classList.toggle('flt-off');
+  try { localStorage.setItem('rp2_fltopen', document.body.classList.contains('flt-off') ? '0' : '1'); } catch (e) { }
+  actualizarChips();
+}
+function toggleSidebar() {
+  if (window.innerWidth <= 1200) { document.body.classList.toggle('menu-on'); return; }
+  document.body.classList.toggle('side-off');
+  try { localStorage.setItem('rp2_side', document.body.classList.contains('side-off') ? '0' : '1'); } catch (e) { }
+}
+function spanMeses() { const m = S.ses.meses; if (!m.length) return null; const a = mesFrom(m[0]), b = mesFrom(m[m.length - 1]); return { a, b: Date.UTC(dt(b).getUTCFullYear(), dt(b).getUTCMonth() + 1, 1) - 1 }; }
+function curRange() {
+  const fl = S.flt, sp = spanMeses(); if (!sp) return null;
+  const hoy = Math.min(nowNaive(), sp.b);
+  if (fl.tipo === 'todo') return { from: sp.a, to: sp.b, label: 'Todo el hist\u00f3rico', tipo: 'todo' };
+  if (fl.tipo === 'rango') { const f = parseIsoD(fl.from) ?? sp.a, t = (parseIsoD(fl.to) ?? dayStart(hoy)) + D - 1; return { from: f, to: t, label: `${fmtD(f)} \u2013 ${fmtD(t)}`, tipo: 'rango' }; }
+  const ps = periodsBetween(sp.a, hoy, fl.tipo); let p = ps.find(x => x.key === fl.per) || ps[ps.length - 1]; fl.per = p.key; return { ...p, tipo: fl.tipo };
+}
+function mesesDeRango(r) { if (!r) return []; const out = []; for (let k = mesKey(r.from); mesFrom(k) <= r.to;) { out.push(k); const d = dt(mesFrom(k)); k = mesKey(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)); } return out; }
+function renderFilters() {
+  const fl = S.flt, sp = spanMeses(), el = $('#filters');
+  if (!sp) { el.innerHTML = '<span class="muted">A\u00fan no hay meses procesados. El administrador debe sincronizar el Excel de origen.</span>'; return; }
+  const hoy = Math.min(nowNaive(), sp.b);
+  const ps = fl.tipo === 'rango' || fl.tipo === 'todo' ? [] : periodsBetween(sp.a, hoy, fl.tipo).reverse();
+  const zonas = [...new Set(S.folios.map(f => f.zona).filter(Boolean))].sort();
+  const sucs = [...new Set(S.folios.filter(f => !fl.zona || f.zona === fl.zona).map(f => f.sucursal).filter(Boolean))].sort();
+  const coords = S.ses.coordinadores;
+  el.innerHTML = `
+  <label>Periodo<select id="fTipo">${[['semana', 'Semana'], ['quincena', 'Quincena'], ['mes', 'Mes'], ['rango', 'Rango'], ['todo', 'Todo']].map(([v, l]) => `<option value="${v}" ${fl.tipo === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+  ${ps.length ? `<label>Selecci\u00f3n<select id="fPer">${ps.map(p => `<option value="${p.key}" ${fl.per === p.key ? 'selected' : ''}>${p.label}</option>`).join('')}</select></label>` : ''}
+  ${fl.tipo === 'rango' ? `<label>Desde<input type="date" id="fFrom" value="${fl.from || isoD(sp.a)}"></label><label>Hasta<input type="date" id="fTo" value="${fl.to || isoD(hoy)}"></label>` : ''}
+  ${S.ses.rol === 'ADMIN' && coords.length ? `<label>Coordinador<select id="fCoord"><option value="">Todos</option>${coords.map(c => `<option value="${esc(c.correo)}" ${fl.coord === c.correo ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('')}</select></label>` : ''}
+  <label>Ejecutiva<select id="fEjec"><option value="">Todas</option>${team().map(e => `<option ${fl.ejec === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}</select></label>
+  <label>Zona<select id="fZona"><option value="">Todas</option>${zonas.map(z => `<option ${fl.zona === z ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select></label>
+  <label>Sucursal<select id="fSuc"><option value="">Todas</option>${sucs.map(z => `<option ${fl.suc === z ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select></label>
+  <label>Universo<select id="fUni">${Object.entries(UNI_LBL).map(([v, l]) => `<option value="${v}" ${fl.universo === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+  `;
+  const on = (id, fn) => { const x = $('#' + id); if (x) x.onchange = e => { fn(e.target.value); saveFlt(); renderFilters(); render(); }; };
+  actualizarChips();
+  on('fTipo', v => { fl.tipo = v; fl.per = null; }); on('fPer', v => fl.per = v); on('fFrom', v => fl.from = v); on('fTo', v => fl.to = v);
+  on('fCoord', v => { fl.coord = v; fl.ejec = ''; }); on('fEjec', v => fl.ejec = v); on('fZona', v => { fl.zona = v; fl.suc = ''; }); on('fSuc', v => fl.suc = v); on('fUni', v => fl.universo = v);
+}
+function saveFlt() { try { localStorage.setItem('rp2_flt', JSON.stringify(S.flt)); } catch (e) { } }
+function go(v, sel) { S.view = v; if (sel) Object.assign(S.sel, sel); setNavTitle(VISTAS[v][0]); $$('.drop.on').forEach(x => x.classList.remove('on')); $$('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); $$('.view').forEach(x => x.classList.toggle('on', x.id === 'v-' + v)); render(); window.scrollTo(0, 0); }
+let _rendering = 0;
+async function render() {
+  const tk = ++_rendering;
+  Object.values(S.charts).forEach(c => c.destroy()); S.charts = {};
+  const v = S.view, el = $('#v-' + v); if (!el) return;
+  if (!S.ses.meses.length && !['admin', 'metodo', 'planes'].includes(v)) { el.innerHTML = `<div class="glass empty"><b>A\u00fan no hay informaci\u00f3n procesada</b>${S.ses.rol === 'ADMIN' ? 'Revisa que <b>ARCHIVO_ORIGEN_ID</b> sea correcto y usa <a href="#" onclick="sincronizarAhora();return false">Sincronizar Excel</a>.' : 'El administrador a\u00fan no ha sincronizado el Excel.'}</div>`; return; }
+  const r = curRange();
+  const need = new Set([...mesesDeRango(r), ...mesesDeRango(prevPeriod(r))]);
+  if (v === 'bonos') { const m = S.sel.bMes || ultimoMesCerrado(); need.add(m); }
+  if (await asegurarMeses([...need])) renderFilters();
+  if (tk !== _rendering) return;
+  try {
+    await ({ dashboard: vDashboard, vencimientos: vVencimientos, ranking: vRanking, coordinadores: vCoord, auditoria: vAuditoria, individual: vIndividual, causas: vCausas, alertas: vAlertas, zonas: vZonas, temporal: vTemporal, folios: vFolios, reporte: vReporte, planes: vPlanes, bonos: vBonos, admin: vAdmin, metodo: vMetodo })[v](el);
+  } catch (e) { console.error(e); el.innerHTML = `<div class="glass banner bad">Error al mostrar este m\u00f3dulo: ${esc(e.message)}</div>`; }
+  el.classList.remove('anim'); void el.offsetWidth; el.classList.add('anim');
+  actualizarChips();
+  clearTimeout(render._b); render._b = setTimeout(actualizarCampana, 400);
+}
+function overlay(msg) { const o = $('#overlay'); if (!msg) { o.classList.remove('on'); return; } o.querySelector('span').textContent = msg; o.classList.add('on'); }
+
+/* ---------- Componentes ---------- */
+function delta(cur, prev, { pct = false, inv = false, unit = '' } = {}) {
+  if (cur == null || prev == null) return '<span class="flat">sin comparativo</span>';
+  const d = pct ? (cur - prev) * 100 : cur - prev; if (Math.abs(d) < 1e-9) return '<span class="flat">= sin cambio</span>';
+  const good = inv ? d < 0 : d > 0;
+  const s = unit === 'h' ? (d > 0 ? '+' : '\u2212') + fmtH(Math.abs(d)) : (d > 0 ? '+' : '') + (pct ? d.toFixed(1) + ' pp' : fmtN(d));
+  return `<span class="${good ? 'up' : 'down'}"><span class="ms" style="font-size:18px;margin:-3px -3px 0 -5px">${d > 0 ? 'arrow_drop_up' : 'arrow_drop_down'}</span>${s}</span> vs anterior`;
+}
+/* MiniStatistics (IconBox 56px + etiqueta + valor) */
+const KPI_IC = [[/vencid/i, 'running_with_errors'], [/cancel/i, 'block'], [/fuera/i, 'timer_off'], [/en tiempo|cumplimiento|\u2264/i, 'timer'], [/pendiente|plazo/i, 'pending_actions'], [/cr\u00edtic/i, 'priority_high'], [/preventiv/i, 'warning'], [/patr/i, 'pattern'], [/seguimiento/i, 'visibility'], [/procede|procedencia/i, 'gavel'], [/comentario/i, 'forum'], [/prom/i, 'avg_time'], [/cerrad|cierre/i, 'task_alt'], [/bono|aplica/i, 'payments'], [/captura/i, 'edit_note'], [/auditad|gesti\u00f3n adecuada|parcial|inadecuad|insuficiente|calidad/i, 'fact_check'], [/ejecutiv/i, 'groups'], [/gestion/i, 'support_agent'], [/folio|asignad/i, 'folder_open']];
+function kpiIcon(l) { for (const [re, ic] of KPI_IC) if (re.test(l)) return ic; return 'bar_chart'; }
+function kpi(l, v, d = '', s = 'n', extra = '') { return `<div class="glass kpi s-${s}" ${extra}><div class="ib"><span class="ms">${kpiIcon(l)}</span></div><div style="min-width:0"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div></div></div>`; }
+function ring(p, lbl, cls = 'pri') { const v = p == null ? 0 : Math.max(0, Math.min(1, p)); const C = 2 * Math.PI * 34; return `<div class="ring ${cls}"><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="34" class="bg"/><circle cx="40" cy="40" r="34" class="fg" stroke-dasharray="${(v * C).toFixed(1)} ${C.toFixed(1)}"/></svg><div><b>${fmtP(p, 0)}</b><span>${lbl}</span></div></div>`; }
+/* Estatus con \u00edcono (ComplexTable de Horizon) y etiqueta suave */
+const PILL_IC = { ok: 'check_circle', bad: 'cancel', warn: 'error', info: 'schedule', n: 'radio_button_unchecked' };
+function pill(t, k = 'n') { return `<span class="pill p-${k}"><span class="ms">${PILL_IC[k] || PILL_IC.n}</span>${esc(t)}</span>`; }
+function tag(t, k = 'n') { return `<span class="pill tag p-${k}">${esc(t)}</span>`; }
+function slaPill(s, lbl = '48 h') { return ({ cumple: pill('En tiempo', 'ok'), fuera: pill('Tarde', 'warn'), vencido: pill('Vencido', 'bad'), plazo: pill('A\u00fan a tiempo', 'info'), na: pill('N/A') })[s] || ''; }
+function clsPill(c) { return pill(CLS_LBL[c] || c, { cerrado: 'ok', cancelado: 'n', seguimiento: 'info', pendiente: 'warn', termino: 'warn', otro: 'n' }[c]); }
+function calPill(c) { return c ? pill(CAL_LBL[c], CAL_CLS[c]) : '<span class="muted">No auditado</span>'; }
+function semaforo(v, verde, amarillo, inv = false) { if (v == null) return 'na'; return inv ? (v <= verde ? 'ok' : v <= amarillo ? 'warn' : 'bad') : (v >= verde ? 'ok' : v >= amarillo ? 'warn' : 'bad'); }
+function table(cols, rows, { id, click, max = 520 } = {}) {
+  const tid = id || 't' + Math.random().toString(36).slice(2, 8);
+  const h = `<div class="tw" style="max-height:${max}px"><table id="${tid}"><thead><tr>${cols.map((c, i) => `<th class="${c.n ? 'n' : ''}" data-i="${i}">${c.l}</th>`).join('')}</tr></thead><tbody>${rows.map((r, ri) => `<tr ${click ? `class="click" data-ri="${ri}"` : ''}>${cols.map(c => { const v = c.v(r); return `<td class="${c.n ? 'n' : ''}" data-s="${esc(c.s ? c.s(r) : (typeof v === 'string' ? v.replace(/<[^>]+>/g, '') : v))}">${v}</td>`; }).join('')}</tr>`).join('') || `<tr><td colspan="${cols.length}" class="muted">Sin registros</td></tr>`}</tbody></table></div>`;
+  setTimeout(() => {
+    const t = document.getElementById(tid); if (!t) return;
+    if (click) t.querySelectorAll('tr.click').forEach(tr => tr.onclick = () => click(rows[+tr.dataset.ri]));
+    t.querySelectorAll('th').forEach(th => th.onclick = () => { const i = +th.dataset.i, tb = t.tBodies[0], trs = [...tb.rows]; const dir = th.dataset.d === '1' ? -1 : 1; th.dataset.d = dir === 1 ? '1' : '0'; trs.sort((a, b) => { const x = a.cells[i].dataset.s, y = b.cells[i].dataset.s; const nx = parseFloat(x), ny = parseFloat(y); return (!isNaN(nx) && !isNaN(ny) ? nx - ny : String(x).localeCompare(y)) * dir; }); trs.forEach(r => tb.appendChild(r)); });
+  });
+  return h;
+}
+/* Paleta de horizon-ui-chakra (variables/charts.js) */
+const PAL = ['#4318FF', '#6AD2FF', '#39B8FF', '#01B574', '#FFB547', '#EE5D50', '#7551FF', '#868CFF', '#A3AED0', '#E31A1A'];
+const COL = { ok: '#01B574', bad: '#EE5D50', warn: '#FFB547', info: '#39B8FF', pri: '#4318FF', mute: '#C9D2EA', dark: '#E31A1A' };
+const hexA = (h, a) => { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; };
+const gradBar = (c, hor) => ctx => { const ch = ctx.chart, a = ch.chartArea; if (!a) return c; const g = hor ? ch.ctx.createLinearGradient(a.left, 0, a.right, 0) : ch.ctx.createLinearGradient(0, a.bottom, 0, a.top); g.addColorStop(0, hexA(c, .28)); g.addColorStop(1, c); return g; };
+const gradArea = c => ctx => { const ch = ctx.chart, a = ch.chartArea; if (!a) return hexA(c, .15); const g = ch.ctx.createLinearGradient(0, a.top, 0, a.bottom); g.addColorStop(0, hexA(c, .32)); g.addColorStop(1, hexA(c, 0)); return g; };
+/** Gr\u00e1ficas con el estilo de Horizon: barras con degradado y radio 10, l\u00edneas suaves sin puntos, sin rejilla en el eje de categor\u00edas y tooltip oscuro. */
+function chart(id, cfg) {
+  setTimeout(() => {
+    const c = document.getElementById(id); if (!c) return;
+    const dark = document.body.classList.contains('dark');
+    Chart.defaults.font.family = "'DM Sans', sans-serif"; Chart.defaults.font.weight = 500; Chart.defaults.color = '#A3AED0';
+    cfg.options = cfg.options || {};
+    const hor = cfg.options.indexAxis === 'y';
+    const stacked = Object.values(cfg.options.scales || {}).some(ax => ax.stacked);
+    for (const ds of (cfg.data.datasets || [])) {
+      const t = ds.type || cfg.type;
+      if (t === 'bar') { if (ds.borderRadius == null) ds.borderRadius = stacked ? 6 : 10; ds.borderSkipped = false; if (ds.maxBarThickness == null) ds.maxBarThickness = stacked ? 26 : 22; if (typeof ds.backgroundColor === 'string' && !stacked && /^#/.test(ds.backgroundColor)) ds.backgroundColor = gradBar(ds.backgroundColor, hor); }
+      if (t === 'line') { if (ds.borderWidth == null) ds.borderWidth = 3; if (ds.tension == null || ds.tension < .4) ds.tension = .4; if (ds.pointRadius == null) ds.pointRadius = 0; ds.pointHoverRadius = 5; ds.pointBackgroundColor = '#fff'; ds.pointHoverBorderWidth = 3; if (ds.fill && typeof ds.borderColor === 'string') ds.backgroundColor = gradArea(ds.borderColor); if (!ds.fill && !ds.backgroundColor) ds.backgroundColor = ds.borderColor; }
+      if (t === 'doughnut' || t === 'pie') { ds.borderWidth = 0; ds.hoverOffset = 6; ds.borderRadius = 4; }
+    }
+    if (cfg.type === 'bar' || cfg.type === 'line') {
+      const sc = cfg.options.scales = cfg.options.scales || {}; const ix = hor ? 'y' : 'x', vx = hor ? 'x' : 'y';
+      sc[ix] = sc[ix] || {}; sc[vx] = sc[vx] || {};
+      sc[ix].grid = Object.assign({ display: false }, sc[ix].grid || {});
+      for (const ax of Object.values(sc)) {
+        ax.grid = Object.assign({ color: dark ? 'rgba(255,255,255,.07)' : 'rgba(163,174,208,.3)', drawTicks: false }, ax.grid || {});
+        ax.border = Object.assign({ display: false, dash: [5, 5] }, ax.border || {});
+        ax.ticks = Object.assign({ color: '#A3AED0', padding: 8, font: { size: 12, weight: 500 } }, ax.ticks || {});
+      }
+    }
+    const o = cfg.options;
+    o.responsive = true; o.maintainAspectRatio = false; o.animation = o.animation || { duration: 600 };
+    o.resizeDelay = 120; o.transitions = Object.assign({ resize: { animation: { duration: 0 } } }, o.transitions || {});
+    o.plugins = Object.assign({}, o.plugins || {});
+    o.plugins.legend = Object.assign({ position: 'bottom' }, o.plugins.legend || {}); o.plugins.legend.labels = Object.assign({ usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 16, color: '#A3AED0', font: { size: 12, weight: 500 } }, o.plugins.legend.labels || {});
+    o.plugins.tooltip = Object.assign({ backgroundColor: '#1B254B', padding: 12, cornerRadius: 12, titleFont: { weight: 700 }, bodyFont: { weight: 500 }, boxPadding: 4, usePointStyle: true }, o.plugins.tooltip || {});
+    if (cfg.type === 'doughnut' && !o.cutout) o.cutout = '72%';
+    S.charts[id] = new Chart(c, cfg);
+  });
+  return `<canvas id="${id}"></canvas>`;
+}
+const pctAxis = { min: 0, max: 100, ticks: { callback: v => v + '%' } };
+function universeStrip(range) {
+  const all = S.folios.filter(f => inR(f.fReg, range) && geoOk(f) && (!S.flt.ejec || f.owner === S.flt.ejec));
+  const enc = all.filter(f => f.encuesta), ea = enc.filter(f => f.auto), rs = all.filter(f => f.reasig && !f.auto);
+  return `<div class="banner info glass compact"><b>Universo del periodo:</b> ${fmtN(all.length)} folios \u00b7 <b>otros medios</b> ${fmtN(all.length - enc.length)} \u00b7 <b>encuesta digital</b> ${fmtN(enc.length)} (${fmtN(ea.length)} cierre autom\u00e1tico \u00b7 ${fmtN(enc.length - ea.length)} gesti\u00f3n manual) \u00b7 <b>reasignados</b> ${fmtN(rs.length)}. Mostrando: <b>${UNI_LBL[S.flt.universo]}</b>.</div>`;
+}
+function matBanner(r) { const mt = maturity(r); if (mt.ok) return ''; return `<div class="banner warn glass compact"><b>Periodo a\u00fan no maduro</b> (termin\u00f3 hace ${Math.max(0, mt.days).toFixed(1)} d\u00edas; regla: ${S.cfg.madurezDias} d\u00edas). Parte de los folios sigue abierta: el % de cierre y el tiempo de cierre a\u00fan no son comparables con el periodo anterior.</div>`; }
+function header(t, sub, acciones = '') { setNavTitle(t); return `<div class="head"><div><h1 class="pg-title">${t}</h1><div class="sub">${sub}</div></div><span class="sp"></span>${acciones}</div>`; }
+
+/* ---------- Dashboard general (layout de views/admin/default de Horizon) ---------- */
+function pieCard(id, titulo, labels, data, colors, pies) {
+  return `<div class="glass card"><div class="row" style="margin-bottom:6px"><h2 style="margin:0;font-size:16px;font-weight:600">${titulo}</h2></div>
+  <div class="chart" style="height:200px">${chart(id, { type: 'doughnut', data: { labels, datasets: [{ data, backgroundColor: colors }] }, options: { plugins: { legend: { display: false } } } })}</div>
+  <div class="glass" style="display:flex;justify-content:space-around;padding:14px 16px;margin-top:14px;box-shadow:0 18px 40px rgba(112,144,176,.12)">${pies.map(([l, v, c]) => `<div><div style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:var(--g600);margin-bottom:4px"><i style="width:8px;height:8px;border-radius:50%;background:${c}"></i>${l}</div><div style="font-size:18px;font-weight:700">${v}</div></div>`).join('<i style="width:1px;background:var(--line)"></i>')}</div></div>`;
+}
+function vDashboard(el) {
+  const r = curRange(), p = prevPeriod(r);
+  const cur = cohort(r), m = metrics(cur), q = metricsPrev(p);
+  const cierresP = closedIn(r).length, cierresPrev = hayDatos(p) ? closedIn(p).length : null;
+  const ml = metaLbl();
+  const est = m.cumpT == null ? ['flat', 'remove', 'Sin datos de cumplimiento'] : m.cumpT >= .8 ? ['', 'check_circle', 'En meta de tiempo'] : m.cumpT >= .6 ? ['warn', 'error', 'Atenci\u00f3n: cumplimiento ' + fmtP(m.cumpT, 0)] : ['bad', 'cancel', 'Fuera de meta: ' + fmtP(m.cumpT, 0)];
+  const nAb = m.pend + m.seg + m.term + m.otro;
+  el.innerHTML = `${header('Dashboard general', `${esc(r.label)} \u00b7 comparado con ${esc(p.label)} \u00b7 cohorte por Fecha Registro`)}
+  ${universeStrip(r)}${matBanner(r)}
+  <div class="kpis">
+    ${kpi('Aperturas en tiempo', fmtN(m.apOk), `1er comentario ${apLbl()} \u00b7 ${fmtP(ratio(m.apOk, m.apOk + m.apVenc), 0)}`, 'ok')}
+    ${kpi('Aperturas vencidas', fmtN(m.apVenc), `${fmtN(m.apTarde)} comentadas tarde \u00b7 ${fmtN(m.apSinCom)} sin comentario`, m.apVenc ? 'bad' : 'ok')}
+    ${kpi('Aperturas a\u00fan a tiempo', fmtN(m.apPl), `sin comentario, a\u00fan dentro de ${apLbl()}`, 'info')}
+    ${kpi('Cierres en tiempo', fmtN(m.cOkT), `cerrados ${ml} \u00b7 ${fmtP(ratio(m.cOkT, m.cOkT + m.cVenc), 0)}`, 'ok')}
+    ${kpi('Cierres vencidos', fmtN(m.cVenc), `${fmtN(m.cTarde)} cerrados tarde \u00b7 ${fmtN(m.cAbVen)} siguen abiertos`, m.cVenc ? 'bad' : 'ok')}
+    ${kpi('Abiertos a\u00fan a tiempo', fmtN(m.cPl), `menos de ${S.cfg.cierreDias} d\u00edas desde el registro`, 'info')}
+  </div>
+  <div class="grid g2 dpair" style="margin-bottom:20px">
+    <div class="glass hero" style="margin:0">
+      <div class="hl"><span class="chipb"><span class="ms">calendar_today</span>${esc(r.tipo === 'semana' ? r.label.split(' (')[0] : r.label)}</span>
+        <div class="big">${fmtN(m.n)}</div>
+        <div class="bl">Folios del periodo \u00b7 ${delta(m.n, q.n)}</div>
+        <div class="ontrack ${est[0]}"><span class="ms">${est[1]}</span>${est[2]}</div>
+        <div class="muted small" style="margin-top:14px">${fmtN(m.regs)} motivos \u00b7 ${fmtN(cierresP)} cierres realizados en el periodo</div></div>
+      <div class="hc">${chart('cDay', dailyCfg(r))}</div>
+    </div>
+    <div class="glass card"><div class="row" style="margin-bottom:6px"><h2 style="margin:0">Aperturas y cierres</h2><span class="sp"></span><button class="btn sm" onclick="go('vencimientos')">Ver vencimientos</button></div>
+      <div class="chart" style="height:240px">${chart('cOp', { type: 'bar', data: { labels: ['Apertura ' + apLbl(), 'Cierre ' + ml], datasets: [{ label: 'En tiempo', data: [m.apOk, m.cOkT], backgroundColor: '#4318FF' }, { label: 'Vencido: atendido tarde', data: [m.apTarde, m.cTarde], backgroundColor: COL.warn }, { label: 'Vencido: sigue pendiente', data: [m.apSinCom, m.cAbVen], backgroundColor: COL.bad }, { label: 'A\u00fan a tiempo', data: [m.apPl, m.cPl], backgroundColor: '#C9D2EA' }] }, options: { plugins: { legend: { position: 'top', align: 'end' } }, scales: { x: { stacked: true }, y: { stacked: true } } } })}</div></div>
+  </div>
+  <div class="grid g2" style="margin-bottom:20px">
+    <div class="glass card"><div class="row" style="margin-bottom:6px"><h2 style="margin:0">Top 5 ejecutivas</h2><span class="sp"></span><button class="btn sm" onclick="go('ranking')">Ver ranking</button></div>${miniRank(r, false)}</div>
+    <div class="grid g2">
+      ${pieCard('cSt', 'Estatus de folios', ['Cerrado', 'En seguimiento', 'Pendiente', 'T\u00e9rmino', 'Cancelado'], [m.cerr, m.seg, m.pend, m.term, m.canc], ['#4318FF', '#6AD2FF', COL.warn, '#39B8FF', COL.mute], [['Cerrados', fmtP(ratio(m.cerr, m.n), 0), '#4318FF'], ['Abiertos', fmtP(ratio(nAb, m.n), 0), '#6AD2FF']])}
+      ${pieCard('cAu', 'Calidad de la gesti\u00f3n', ['Adecuada', 'Parcial', 'Inadecuada', 'Insuficiente'], [m.aud.A, m.aud.P, m.aud.I, m.aud.N], [COL.ok, COL.warn, COL.bad, COL.mute], [['Adecuada', fmtP(m.aud.pA, 0), COL.ok], ['Auditados', fmtN(m.aud.n), '#4318FF']])}
+    </div>
+  </div>
+  <div class="grid g2" style="margin-bottom:20px">
+    <div class="glass card"><div class="row" style="margin-bottom:6px"><h2 style="margin:0">Requieren acompa\u00f1amiento</h2><span class="sp"></span><button class="btn sm" onclick="go('alertas')">Ver alertas</button></div>${miniRank(r, true)}</div>
+    <div class="glass card ringcard"><h2>Indicadores de servicio</h2><div class="rings">${ring(m.pctCierre, '% de cierre', 'pri')}${ring(m.cumpT, 'Cierre ' + ml, m.cumpT >= 0.8 ? 'ok' : m.cumpT >= 0.6 ? 'warn' : 'bad')}${ring(m.slaFs, 'Apertura ' + apLbl(), m.slaFs >= 0.8 ? 'ok' : m.slaFs >= 0.6 ? 'warn' : 'bad')}${ring(m.aud.pA, 'Gesti\u00f3n adecuada', m.aud.pA >= 0.6 ? 'ok' : m.aud.pA >= 0.4 ? 'warn' : 'bad')}</div><div class="note">${fmtN(m.aud.n)} folios cerrados auditados \u00b7 puntaje promedio ${fmt1(m.aud.avg)}</div></div>
+  </div>
+  <div class="kpis">
+    ${kpi('Cerrados', fmtN(m.cerr), delta(m.cerr, q.cerr) + ' \u00b7 ' + fmtP(m.pctCierre, 0) + ' de cierre')}
+    ${kpi('Prom. registro \u2192 1er comentario', fmtH(m.avgFs), delta(m.avgFs, q.avgFs, { inv: true, unit: 'h' }))}
+    ${kpi('Prom. d\u00edas a cierre', m.avgCd != null ? m.avgCd.toFixed(1) + ' d\u00edas' : '\u2014', `desv. est\u00e1ndar ${m.sdCd != null ? m.sdCd.toFixed(1) + ' d\u00edas' : '\u2014'}`)}
+    ${kpi('Folios reasignados', fmtN(S.folios.filter(f => f.reasig && inR(f.fReg, r) && geoOk(f) && (!S.flt.ejec || f.owner === S.flt.ejec)).length), 'se cuentan aparte (no se eval\u00faan)', 'info', `onclick="go('vencimientos')" style="cursor:pointer"`)}
+    ${kpi('Cierres autom\u00e1ticos', fmtN(S.folios.filter(f => f.auto && inR(f.fReg, r) && geoOk(f) && (!S.flt.ejec || f.owner === S.flt.ejec)).length), 'encuesta digital \u00b7 se cuentan aparte')}
+    ${kpi('Cancelados', fmtN(m.canc), 'excluidos del % de cierre')}
+  </div>`;
+}
+function miniRank(r, peor) {
+  const L = execStats(r).filter(x => x.score != null).sort((a, b) => peor ? a.score - b.score : b.score - a.score).slice(0, 5);
+  if (!L.length) return '<div class="muted">Sin ejecutivas con informaci\u00f3n suficiente.</div>';
+  return L.map((m, i) => `<div class="mrow click" onclick="go('individual',{ejec:'${esc(m.ejec)}'})"><span class="pos">${i + 1}</span><span class="nm">${esc(m.ejec)}</span><span class="bar"><i style="width:${m.score}%;background:${peor ? COL.warn : COL.ok}"></i></span><b>${fmt1(m.score)}</b></div>`).join('');
+}
+function dailyCfg(r) { const days = []; for (let d = r.from; d <= r.to; d += D) days.push(d); const bf = baseFilter(); const e = days.map(d => S.folios.filter(f => bf(f) && f.fReg >= d && f.fReg < d + D).length), c = days.map(d => S.folios.filter(f => bf(f) && f.fCierre != null && f.fCierre >= d && f.fCierre < d + D).length); return { type: 'line', data: { labels: days.map(d => fmtD(d).slice(0, 5)), datasets: [{ label: 'Entradas', data: e, borderColor: '#4318FF', fill: true }, { label: 'Cierres', data: c, borderColor: '#39B8FF' }] }, options: { plugins: { legend: { position: 'top', align: 'end' } }, scales: { x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } }, y: { beginAtZero: true } } } }; }
+
+/* ---------- Ranking ---------- */
+function vRanking(el) {
+  const r = curRange(); const all = execStats(r); const c = S.cfg; const ml = metaLbl();
+  const ok = all.filter(m => m.score != null), ins = all.filter(m => m.score == null);
+  const tab = S.sel.rk || 'general';
+  const defs = { general: ['Desempe\u00f1o general', m => m.score], prod: ['Productividad', m => m.sP], cierre: ['% de cierre', m => m.pctCierre], tiempo: [`Cumplimiento en tiempo (${ml})`, m => m.cumpT], calidad: ['Calidad de gesti\u00f3n', m => m.aud.pA], mejora: ['\u00c1reas de oportunidad', m => m.score] };
+  const [title, key] = defs[tab];
+  const list = [...ok].sort((a, b) => tab === 'mejora' ? key(a) - key(b) : (key(b) ?? -1) - (key(a) ?? -1));
+  const weak = m => [['Productividad', m.sP], ['Resoluci\u00f3n', m.sR], ['Oportunidad', m.sO]].sort((a, b) => a[1] - b[1])[0][0];
+  const sem = (v, g, y) => `<span class="sem ${semaforo(v, g, y)}"></span>`;
+  el.innerHTML = `${header('Ranking de ejecutivas', `${esc(r.label)} \u00b7 Productividad ${c.wP}% \u00b7 Resoluci\u00f3n ${c.wR}% \u00b7 Oportunidad ${c.wO}% \u00b7 meta de tiempo ${ml} \u00b7 m\u00ednimo ${c.minFolios} folios`, `<button class="btn" onclick="exportRanking()">Exportar Excel</button>`)}
+  <div class="banner info glass">Cerrar no es lo mismo que cerrar a tiempo: la <b>productividad</b> cuenta solo los cierres hechos dentro de la meta (${ml}) y la <b>oportunidad</b> castiga los cierres fuera de tiempo y los folios que siguen vencidos.</div>
+  <div class="tabs">${Object.entries(defs).map(([k, d]) => `<button data-k="${k}" class="${k === tab ? 'on' : ''}">${d[0]}</button>`).join('')}</div>
+  <div class="glass card"><h2>${title}</h2><div class="chart" style="height:${Math.max(280, list.length * 26 + 70)}px">${chart('cRk', tab === 'general' || tab === 'mejora' ? { type: 'bar', data: { labels: list.map(m => m.ejec.split(' ').slice(0, 2).join(' ')), datasets: [{ label: 'Productividad', data: list.map(m => +(m.sP * c.wP / 100).toFixed(1)), backgroundColor: PAL[0] }, { label: 'Resoluci\u00f3n', data: list.map(m => +(m.sR * c.wR / 100).toFixed(1)), backgroundColor: PAL[1] }, { label: 'Oportunidad', data: list.map(m => +(m.sO * c.wO / 100).toFixed(1)), backgroundColor: PAL[2] }] }, options: { indexAxis: 'y', scales: { x: { stacked: true, max: 100 }, y: { stacked: true, ticks: { autoSkip: false } } } } } : { type: 'bar', data: { labels: list.map(m => m.ejec.split(' ').slice(0, 2).join(' ')), datasets: [{ label: title, data: list.map(m => { const v = key(m); return v == null ? null : tab === 'prod' ? +v.toFixed(1) : +(v * 100).toFixed(1); }), backgroundColor: COL.pri, borderRadius: 6 }] }, options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: tab === 'prod' ? { max: 100 } : pctAxis, y: { ticks: { autoSkip: false } } } } })}</div></div>
+  <div class="glass card" style="margin-top:16px"><h2>Tabla comparativa</h2>${table([
+    { l: '#', n: 1, v: m => list.indexOf(m) + 1, s: m => list.indexOf(m) },
+    { l: 'Ejecutiva', v: m => `<b>${esc(m.ejec)}</b>${m.coord ? `<br><span class="muted">${esc(coordNombre(m.coord))}</span>` : ''}`, s: m => m.ejec },
+    { l: 'Asignados', n: 1, v: m => fmtN(m.asign), s: m => m.asign },
+    { l: 'Cerrados', n: 1, v: m => fmtN(m.cerr), s: m => m.cerr },
+    { l: 'En tiempo', n: 1, v: m => fmtN(m.cerrEnT), s: m => m.cerrEnT },
+    { l: 'Fuera de tiempo', n: 1, v: m => fmtN(m.cerrFuera), s: m => m.cerrFuera },
+    { l: 'Abiertos a\u00fan a tiempo', n: 1, v: m => fmtN(m.pendPlazo), s: m => m.pendPlazo },
+    { l: 'Abiertos vencidos', n: 1, v: m => m.vencidos ? `<span class="down">${fmtN(m.vencidos)}</span>` : '0', s: m => m.vencidos },
+    { l: '% cumplimiento en tiempo', n: 1, v: m => sem(m.cumpT, .8, .6) + fmtP(m.cumpT), s: m => m.cumpT ?? -1 },
+    { l: '% cierre', n: 1, v: m => sem(m.pctCierre, .85, .7) + fmtP(m.pctCierre), s: m => m.pctCierre ?? -1 },
+    { l: '1er com. \u226448 h', n: 1, v: m => fmtP(m.slaFs), s: m => m.slaFs ?? -1 },
+    { l: 'Gesti\u00f3n adecuada', n: 1, v: m => fmtP(m.aud.pA), s: m => m.aud.pA ?? -1 },
+    { l: 'Desempe\u00f1o general', n: 1, v: m => `<b>${fmt1(m.score)}</b>`, s: m => m.score },
+    ...(tab === 'mejora' ? [{ l: 'Dimensi\u00f3n m\u00e1s d\u00e9bil', v: m => tag(weak(m), 'warn') }] : [])], list, { click: m => go('individual', { ejec: m.ejec }) })}
+  <div class="note">Cumplimiento en tiempo = cerrados en tiempo \u00f7 (cerrados + abiertos que siguen vencidos). Los abiertos a\u00fan a tiempo (menos de 7 d\u00edas) no cuentan hasta que vencen o se cierran.</div></div>
+  ${ins.length ? `<div class="glass card" style="margin-top:16px"><h2>Sin calificaci\u00f3n (informaci\u00f3n insuficiente)</h2>${table([{ l: 'Ejecutiva', v: m => esc(m.ejec) }, { l: 'Nivel', v: m => pill(m.nivel) }, { l: 'Folios elegibles', n: 1, v: m => fmtN(m.eleg), s: m => m.eleg }, { l: 'Cerrados', n: 1, v: m => fmtN(m.cerr), s: m => m.cerr }], ins, { click: m => go('individual', { ejec: m.ejec }), max: 260 })}</div>` : ''}`;
+  $$('#v-ranking .tabs button').forEach(b => b.onclick = () => { S.sel.rk = b.dataset.k; render(); });
+}
+function coordNombre(correo) { const c = S.ses.coordinadores.find(x => x.correo === correo); return c ? c.nombre : correo || 'Sin coordinador'; }
+function exportRanking() {
+  const r = curRange(); const L = execStats(r).sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  const rows = [['Ejecutiva', 'Coordinador', 'Asignados', 'Cerrados', 'Cerrados en tiempo', 'Cerrados fuera de tiempo', 'Abiertos a\u00fan a tiempo', 'Abiertos vencidos', '% cumplimiento en tiempo', '% cierre', '1er comentario \u226448 h', 'Cierre \u226448 h', 'Cierre \u2264' + S.cfg.cierreDias + ' d\u00edas', 'Gesti\u00f3n adecuada %', 'Productividad', 'Resoluci\u00f3n', 'Oportunidad', 'Desempe\u00f1o general', 'Nivel de informaci\u00f3n']];
+  for (const m of L) rows.push([m.ejec, coordNombre(m.coord), m.asign, m.cerr, m.cerrEnT, m.cerrFuera, m.pendPlazo, m.vencidos, m.cumpT, m.pctCierre, m.slaFs, m.slaC, m.slaC7, m.aud.pA, m.sP, m.sR, m.sO, m.score, m.nivel]);
+  xlsxDescarga([['Ranking', rows]], `Ranking_${fname(r.label)}.xlsx`);
+}
+
+/* ---------- Desempe\u00f1o por coordinador ---------- */
+function vCoord(el) {
+  const r = curRange(); const coords = S.ses.coordinadores;
+  const rows = coords.map(c => {
+    const st = execStats(r, { lista: c.ejecutivas });
+    const fs = S.folios.filter(f => !f.auto && uniOk(f, S.flt.universo) && inR(f.fReg, r) && c.ejecutivas.includes(f.owner) && (!S.flt.zona || f.zona === S.flt.zona) && (!S.flt.suc || f.sucursal === S.flt.suc));
+    const m = metrics(fs); const sc = st.filter(x => x.score != null);
+    return { c, m, st, score: mean(sc.map(x => x.score)), alertas: 0, mejor: sc.sort((a, b) => b.score - a.score)[0], peor: sc.sort((a, b) => a.score - b.score)[0] };
+  });
+  const al = computeAlerts(r, prevPeriod(r)); rows.forEach(x => x.alertas = al.filter(a => a.lvl === 'critica' && x.c.ejecutivas.includes(a.ejec)).length);
+  el.innerHTML = `${header('Desempe\u00f1o por coordinador', `${esc(r.label)} \u00b7 ${coords.length} equipo(s) \u00b7 sin cierres autom\u00e1ticos`)}
+  ${coords.length ? '' : '<div class="banner warn glass">No hay equipos configurados. Registra coordinadores y ejecutivas en la hoja <b>Equipos</b>.</div>'}
+  <div class="grid g3">${rows.map(x => `<div class="glass card team"><div class="row"><h2 style="margin:0">${esc(x.c.nombre)}</h2><span class="sp"></span><b class="score">${fmt1(x.score)}</b></div><div class="muted">${x.c.ejecutivas.length} ejecutivas \u00b7 ${fmtN(x.m.n)} folios</div>
+    <div class="ringrow">${ring(x.m.pctCierre, '% cierre', 'pri')}${ring(x.m.cumpT, 'En tiempo', x.m.cumpT >= .8 ? 'ok' : x.m.cumpT >= .6 ? 'warn' : 'bad')}${ring(x.m.aud.pA, 'Adecuada', x.m.aud.pA >= .6 ? 'ok' : 'warn')}</div>
+    <div class="mini"><span>Siguen vencidos <b class="${x.m.vencidos ? 'down' : ''}">${fmtN(x.m.vencidos)}</b></span><span>Alertas cr\u00edticas <b class="${x.alertas ? 'down' : ''}">${x.alertas}</b></span></div>
+    <div class="mini"><span>Mejor: <b>${esc(x.mejor?.ejec.split(' ').slice(0, 2).join(' ') || '\u2014')}</b></span><span>Atender: <b>${esc(x.peor?.ejec.split(' ').slice(0, 2).join(' ') || '\u2014')}</b></span></div>
+    <button class="btn sm" onclick="S.flt.coord='${esc(x.c.correo)}';saveFlt();renderFilters();go('ranking')">Ver ranking del equipo</button></div>`).join('')}</div>
+  ${rows.length > 1 ? `<div class="glass card" style="margin-top:16px"><h2>Comparativo de equipos</h2><div class="chart">${chart('cCo', { type: 'bar', data: { labels: rows.map(x => x.c.nombre), datasets: [['% cierre', x => x.m.pctCierre], ['Cumplimiento en tiempo', x => x.m.cumpT], ['1er comentario \u226448 h', x => x.m.slaFs], ['Gesti\u00f3n adecuada', x => x.m.aud.pA]].map(([l, fn], i) => ({ label: l, data: rows.map(x => fn(x) != null ? +(fn(x) * 100).toFixed(1) : null), backgroundColor: PAL[i], borderRadius: 4 })) }, options: { scales: { y: pctAxis } } })}</div></div>` : ''}
+  <div class="glass card" style="margin-top:16px"><h2>Detalle por equipo</h2>${table([{ l: 'Coordinador', v: x => `<b>${esc(x.c.nombre)}</b><br><span class="muted">${esc(x.c.correo)}</span>` }, { l: 'Ejecutivas', n: 1, v: x => x.c.ejecutivas.length }, { l: 'Folios', n: 1, v: x => fmtN(x.m.n), s: x => x.m.n }, { l: 'Cerrados', n: 1, v: x => fmtN(x.m.cerr), s: x => x.m.cerr }, { l: 'En tiempo', n: 1, v: x => fmtN(x.m.cerrEnT), s: x => x.m.cerrEnT }, { l: 'Fuera de tiempo', n: 1, v: x => fmtN(x.m.cerrFuera), s: x => x.m.cerrFuera }, { l: 'Abiertos vencidos', n: 1, v: x => fmtN(x.m.vencidos), s: x => x.m.vencidos }, { l: '% cumplimiento', n: 1, v: x => fmtP(x.m.cumpT), s: x => x.m.cumpT ?? -1 }, { l: '% cierre', n: 1, v: x => fmtP(x.m.pctCierre), s: x => x.m.pctCierre ?? -1 }, { l: 'Gesti\u00f3n adecuada', n: 1, v: x => fmtP(x.m.aud.pA), s: x => x.m.aud.pA ?? -1 }, { l: 'Desempe\u00f1o prom.', n: 1, v: x => fmt1(x.score), s: x => x.score ?? -1 }], rows)}</div>`;
+}
+
+/* ---------- Alertas y \u00e1reas de oportunidad ---------- */
+function vAlertas(el) {
+  const r = curRange(), p = prevPeriod(r); const A = computeAlerts(r, p).filter(a => !S.flt.ejec || a.ejec === S.flt.ejec);
+  const lv = S.sel.alv || 'todas', tp = S.sel.alt || 'todos'; const L = { critica: 'Cr\u00edtica', preventiva: 'Preventiva', seguimiento: 'Seguimiento' };
+  const fil = A.filter(a => (lv === 'todas' || a.lvl === lv) && (tp === 'todos' || a.tipo === tp));
+  const by = new Map(); for (const a of fil) { if (!by.has(a.ejec)) by.set(a.ejec, []); by.get(a.ejec).push(a); }
+  el.innerHTML = `${header('Alertas y \u00e1reas de oportunidad', `${esc(r.label)} vs ${esc(p.label)} \u00b7 incluye patrones repetitivos detectados por la auditor\u00eda`)}${matBanner(r)}
+  <div class="kpis">${kpi('Cr\u00edticas', A.filter(a => a.lvl === 'critica').length, '', 'bad')}${kpi('Preventivas', A.filter(a => a.lvl === 'preventiva').length, '', 'warn')}${kpi('Seguimiento', A.filter(a => a.lvl === 'seguimiento').length, '', 'info')}${kpi('Patrones de calidad', A.filter(a => a.tipo === 'Calidad').length, 'errores recurrentes en auditor\u00eda', 'warn')}</div>
+  <div class="tabs">${['todas', 'critica', 'preventiva', 'seguimiento'].map(k => `<button data-k="${k}" data-g="alv" class="${k === lv ? 'on' : ''}">${k === 'todas' ? 'Todas' : L[k]}</button>`).join('')}<span style="width:16px"></span>${['todos', 'Tiempos', 'Calidad'].map(k => `<button data-k="${k}" data-g="alt" class="${k === tp ? 'on' : ''}">${k === 'todos' ? 'Todo tipo' : k}</button>`).join('')}</div>
+  ${by.size ? [...by].map(([e, as]) => `<div class="glass card" style="margin-bottom:12px"><div class="row"><h2 style="margin:0">${esc(e)}</h2><span class="muted">${esc(coordNombre(as[0].coord))}</span><span class="sp"></span><button class="btn sm" onclick="go('individual',{ejec:'${esc(e)}'})">Ver reporte</button><button class="btn sm" onclick="newPlan('${esc(e)}','${esc(as[0].ind)}')">Registrar plan</button></div><div style="margin-top:10px">${as.map(a => `<div class="alert ${a.lvl}"><div class="t">${tag(L[a.lvl], { critica: 'bad', preventiva: 'warn', seguimiento: 'info' }[a.lvl])} ${tag(a.tipo)} ${esc(a.ind)}</div><div class="m">Dato: ${esc(a.dato)}</div><div class="r"><b>Acci\u00f3n sugerida:</b> ${esc(a.rec)}</div></div>`).join('')}</div></div>`).join('') : '<div class="glass empty"><b>Sin alertas</b>Ning\u00fan indicador rebasa los umbrales en este periodo.</div>'}
+  <div class="note">Umbrales en la hoja Config (prefijos AL_ y AUD_). Las alertas de tiempos comparan contra la mediana del propio equipo; los patrones de calidad se activan cuando \u2265${S.cfg.aud.patronPct}% de los folios auditados de una ejecutiva fallan el mismo criterio (m\u00ednimo ${S.cfg.aud.patronMin} auditados).</div>`;
+  $$('#v-alertas .tabs button').forEach(b => b.onclick = () => { S.sel[b.dataset.g] = b.dataset.k; render(); });
+}
+
+/* =====================================================================
+ *  VISTAS 2 \u2014 auditor\u00eda de folios, reporte individual, causas ra\u00edz,
+ *  consulta de folios y detalle de folio
+ * ===================================================================== */
+
+/* ---------- Auditor\u00eda de folios ---------- */
+function vAuditoria(el) {
+  const r = curRange();
+  const st = S.sel.aud || (S.sel.aud = { cal: '', est: '', proc: '', crit: '' });
+  const base = cohort(r).filter(f => f.aud);
+  const fil = base.filter(f => (!st.cal || f.aud.cal === st.cal) && (!st.proc || f.aud.proc === st.proc) && (!st.est || f.cls === st.est) && (!st.crit || f.aud.crit[+st.crit] === 'N'));
+  const m = metrics(base);
+  const sel = (id, lbl, opts, val) => `<label>${lbl}<select data-af="${id}"><option value="">Todos</option>${opts.map(([v, l]) => `<option value="${v}" ${String(val) === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+  el.innerHTML = `${header('Auditor\u00eda de folios', `${esc(r.label)} \u00b7 ${fmtN(base.length)} folios cerrados auditados \u00b7 evaluaci\u00f3n autom\u00e1tica por reglas (sin IA) \u00b7 filtros de ejecutiva y coordinador arriba`, `<button class="btn" id="audXls">Exportar Excel</button>`)}
+  <div class="kpis">${kpi('Auditados', fmtN(m.aud.n), 'folios cerrados con gesti\u00f3n manual')}${kpi('Gesti\u00f3n adecuada', fmtP(m.aud.pA), fmtN(m.aud.A) + ' folios', 'ok')}${kpi('Parcialmente adecuada', fmtP(m.aud.pP), fmtN(m.aud.P) + ' folios', 'warn')}${kpi('Inadecuada', fmtP(m.aud.pI), fmtN(m.aud.I) + ' folios', 'bad')}${kpi('Informaci\u00f3n insuficiente', fmtP(m.aud.pN), fmtN(m.aud.N) + ' folios')}${kpi('Procedencia no determinable', fmtN(base.filter(f => f.aud.proc === 'D').length), 'sin sustento suficiente', 'warn')}</div>
+  <div class="glass card" style="margin-bottom:16px"><h2>Cumplimiento por criterio</h2><div class="chart" style="height:300px">${chart('cCrit', { type: 'bar', data: { labels: CRIT.map(c => c[1]), datasets: [{ label: 'Cumple', data: CRIT.map((c, i) => m.aud.n - m.aud.crit[i] - m.aud.critP[i]), backgroundColor: COL.ok }, { label: 'Parcial', data: CRIT.map((c, i) => m.aud.critP[i]), backgroundColor: COL.warn }, { label: 'No cumple', data: CRIT.map((c, i) => m.aud.crit[i]), backgroundColor: COL.bad }] }, options: { indexAxis: 'y', scales: { x: { stacked: true }, y: { stacked: true } } } })}</div></div>
+  <div class="glass card"><div class="filters-inline">${sel('cal', 'Resultado', Object.entries(CAL_LBL), st.cal)}${sel('est', 'Estatus', [['cerrado', 'Cerrado'], ['termino', 'T\u00e9rmino']], st.est)}${sel('proc', 'Procedencia', Object.entries(PROC_LBL), st.proc)}${sel('crit', 'Falla en criterio', CRIT.map((c, i) => [i, c[1]]), st.crit)}<span class="sp"></span><span class="muted">${fmtN(fil.length)} folios</span></div>
+  ${auditTable(fil)}</div>`;
+  $$('#v-auditoria [data-af]').forEach(s => s.onchange = () => { st[s.dataset.af] = s.value; render(); });
+  $('#audXls').onclick = () => exportAuditoria(fil, r);
+}
+function auditTable(fs, max = 620) {
+  return table([
+    { l: 'Folio', v: f => `<b>${esc(f.folio)}</b>`, s: f => f.folio },
+    { l: 'Ejecutiva', v: f => esc(f.owner.split(' ').slice(0, 2).join(' ')), s: f => f.owner },
+    { l: 'Recepci\u00f3n', v: f => fmtD(f.fReg), s: f => f.fReg },
+    { l: 'Cierre', v: f => fmtD(f.fCierre), s: f => f.fCierre ?? 0 },
+    { l: 'Tiempo de resoluci\u00f3n', n: 1, v: f => fmtH(f.hC), s: f => f.hC ?? -1 },
+    { l: 'Plazo', v: f => slaPill(slaMeta(f), metaLbl()), s: f => slaMeta(f) },
+    { l: 'Procedencia', v: f => pill(PROC_LBL[f.aud.proc], f.aud.proc === 'D' ? 'warn' : 'n'), s: f => f.aud.proc },
+    { l: 'Causa ra\u00edz', v: f => esc(f.aud.causa) + (f.aud.fuente === 'T' ? ' <span class="muted">(inferida)</span>' : ''), s: f => f.aud.causa },
+    { l: 'Resultado', v: f => calPill(f.aud.cal) + ` <span class="muted">${f.aud.score}</span>`, s: f => f.aud.score },
+    { l: 'Observaciones', v: f => `<span class="obs">${esc(observacion(f.aud))}</span>` },
+    { l: '\u00c1rea de oportunidad', v: f => esc(f.aud.oport) },
+  ], fs.slice(0, 1000), { click: f => abrirFolio(f.folio), max }) + (fs.length > 1000 ? `<div class="note">Se muestran 1,000 de ${fmtN(fs.length)} folios; usa los filtros o Exportar Excel para ver todos.</div>` : '');
+}
+function exportAuditoria(fs, r) {
+  const rows = [['Folio', 'Ejecutiva', 'Coordinador', 'Fecha de recepci\u00f3n', 'Fecha de cierre', 'Tiempo de resoluci\u00f3n (h)', 'Cumple plazo (' + metaLbl() + ')', 'Procedencia', 'Causa ra\u00edz', 'Fuente causa', 'Resultado auditor\u00eda', 'Puntaje', ...CRIT.map(c => c[0] + ' ' + c[1]), 'Observaciones', '\u00c1rea de oportunidad', 'Tipo de evaluaci\u00f3n']];
+  for (const f of fs) rows.push([f.folio, f.owner, coordNombre(f.coord), fmtDT(f.fReg), fmtDT(f.fCierre), f.hC != null ? +f.hC.toFixed(1) : null, slaMeta(f) === 'cumple' ? 'SI' : 'NO', PROC_LBL[f.aud.proc], f.aud.causa, { C: 'Columna Causas', T: 'Inferida del texto', N: 'No determinable' }[f.aud.fuente], CAL_LBL[f.aud.cal], f.aud.score, ...f.aud.crit.split('').map(c => ({ C: 'Cumple', P: 'Parcial', N: 'No cumple' }[c])), observacion(f.aud), f.aud.oport, 'Autom\u00e1tica por reglas']);
+  xlsxDescarga([['Auditor\u00eda', rows]], `Auditoria_${fname(r.label)}.xlsx`);
+}
+
+/* ---------- Reporte individual por ejecutiva ---------- */
+function vIndividual(el) {
+  const t = team(); const e = S.sel.ejec && t.includes(S.sel.ejec) ? S.sel.ejec : (S.flt.ejec || t[0]); S.sel.ejec = e;
+  if (!e) { el.innerHTML = '<div class="glass empty"><b>Sin ejecutivas</b>No hay ejecutivas asignadas a tu equipo.</div>'; return; }
+  const r = curRange(), p = prevPeriod(r);
+  const all = execStats(r), m = all.find(x => x.ejec === e), pm = hayDatos(p) ? execStats(p, { lista: [e] })[0] : NULLM;
+  const rk = all.filter(x => x.score != null).sort((a, b) => b.score - a.score); const pos = rk.findIndex(x => x.ejec === e);
+  const own = cohort(r, { ejec: e }).filter(f => !f.auto);
+  const audit = own.filter(f => f.aud);
+  const errores = CRIT.map((c, i) => ({ id: c[0], lbl: ERROR_LBL[c[0]], crit: c[1], n: m.aud.crit[i], p: ratio(m.aud.crit[i], m.aud.n) })).filter(x => x.n).sort((a, b) => b.n - a.n);
+  const recs = recomendaciones(m, errores);
+  const opps = errores.filter(x => x.p >= 0.15).slice(0, 4);
+  const gran = S.sel.gran || 'semana';
+  const loaded = [...S.loaded].sort(); const sp = loaded.length ? { a: mesFrom(loaded[0]), b: Math.min(nowNaive(), mesFrom(loaded[loaded.length - 1]) + 31 * D) } : null;
+  const ps = sp ? periodsBetween(sp.a, sp.b, gran).slice(-12) : [];
+  const evo = ps.map(pp => execStats(pp, { lista: [e] })[0]);
+  el.innerHTML = `${matBanner(r)}${header('Reporte individual', `${esc(r.label)} \u00b7 gesti\u00f3n de ejecutivas \u00b7 universo: ${UNI_LBL[S.flt.universo]}`, `<label class="noprint inline">Ejecutiva <select id="iEj">${t.map(x => `<option ${x === e ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label><button class="btn pri noprint" onclick="pdfIndividual()">PDF de la ejecutiva</button><button class="btn noprint" onclick="pdfEquipoZip()">PDFs de todo el equipo (ZIP)</button>`)}
+  <div class="glass card idcard"><div class="av">${esc(iniciales(e))}</div><div><h2 style="margin:0 0 4px">${esc(e)}</h2><div class="muted">${esc(coordNombre(m.coord))} \u00b7 Nivel de informaci\u00f3n: <b>${m.nivel}</b> (${fmtN(m.eleg)} folios elegibles)${m.score != null ? ` \u00b7 posici\u00f3n ${pos + 1} de ${rk.length}` : ''}</div></div><span class="sp"></span>
+  ${m.score != null ? `<div class="scorebox"><span>Desempe\u00f1o general</span><b>${fmt1(m.score)}</b><small>Prod. ${fmt1(m.sP)} \u00b7 Resol. ${fmt1(m.sR)} \u00b7 Oport. ${fmt1(m.sO)}</small></div>` : tag('Sin calificaci\u00f3n')}</div>
+  ${bonoFichaHtml(e, r)}
+  <h3>Gesti\u00f3n y tiempos</h3><div class="kpis">
+   ${kpi('Folios asignados', fmtN(m.asign), delta(m.asign, pm?.asign))}
+   ${kpi('Folios gestionados', fmtN(m.gestionados), 'con al menos una gesti\u00f3n suya')}
+   ${kpi('Cerrados', fmtN(m.cerr), `${fmtN(m.cerrEnT)} en tiempo \u00b7 ${fmtN(m.cerrFuera)} fuera`)}
+   ${kpi('Abiertos vencidos', fmtN(m.vencidos), `abiertos fuera de ${metaLbl()}`, m.vencidos ? 'bad' : 'ok')}
+   ${kpi('Abiertos a\u00fan a tiempo', fmtN(m.pendPlazo), '', 'info')}
+   ${kpi('% cumplimiento en tiempo', fmtP(m.cumpT), delta(m.cumpT, pm?.cumpT, { pct: true }), semaforo(m.cumpT, .8, .6))}
+   ${kpi('% de cierre', fmtP(m.pctCierre), delta(m.pctCierre, pm?.pctCierre, { pct: true }), semaforo(m.pctCierre, .85, .7))}
+   ${kpi('Apertura ' + apLbl(), fmtP(m.slaFs), delta(m.slaFs, pm?.slaFs, { pct: true }), semaforo(m.slaFs, .8, .6))}
+   ${kpi('Aperturas vencidas', fmtN(m.apVenc), `${fmtN(m.apTarde)} tarde \u00b7 ${fmtN(m.apSinCom)} sin comentario`, m.apVenc ? 'bad' : 'ok')}
+   ${kpi('Cierres vencidos', fmtN(m.cVenc), `${fmtN(m.cTarde)} cerrados tarde \u00b7 ${fmtN(m.cAbVen)} abiertos`, m.cVenc ? 'bad' : 'ok')}
+   ${kpi('Desv. est\u00e1ndar d\u00edas a cierre', m.sdCd != null ? m.sdCd.toFixed(1) + ' d\u00edas' : '\u2014', `promedio ${m.avgCd != null ? m.avgCd.toFixed(1) + ' d\u00edas' : '\u2014'}`)}
+   ${kpi('Folios atendidos por d\u00eda', m.cargaProm != null ? m.cargaProm.toFixed(1) : '\u2014', `desv. est\u00e1ndar ${m.cargaSd != null ? m.cargaSd.toFixed(1) : '\u2014'} \u00b7 ${fmtN(m.diasActivos)} d\u00edas con gesti\u00f3n`)}
+   ${kpi('Prom. cierre', fmtH(m.avgC), delta(m.avgC, pm?.avgC, { inv: true, unit: 'h' }))}
+   ${kpi('Gestiones registradas', fmtN(m.gestiones), 'entradas de historial en el periodo')}
+  </div>
+  <div class="grid g2">
+   <div class="glass card"><h2>Distribuci\u00f3n por estatus</h2><div class="chart" style="height:240px">${chart('cIst', { type: 'doughnut', data: { labels: ['Cerrado en tiempo', 'Cerrado fuera de tiempo', 'Abierto a\u00fan a tiempo', 'Vencido', 'Cancelado'], datasets: [{ data: [m.cerrEnT, m.cerrFuera, m.pendPlazo, m.vencidos, m.canc], backgroundColor: [COL.ok, COL.warn, COL.info, COL.bad, COL.mute], borderWidth: 0 }] }, options: { cutout: '65%', plugins: { legend: { position: 'right' } } } })}</div></div>
+   <div class="glass card"><h2>Resultados de auditor\u00eda (${fmtN(m.aud.n)} folios)</h2><div class="ringrow">${ring(m.aud.pA, 'Adecuadas', 'ok')}${ring(m.aud.pP, 'Parciales', 'warn')}${ring((m.aud.I + m.aud.N) / (m.aud.n || 1), 'Inadecuadas', 'bad')}</div><div class="note">Inadecuadas incluye ${fmtN(m.aud.N)} con informaci\u00f3n insuficiente. Puntaje promedio ${fmt1(m.aud.avg)}.</div></div>
+  </div>
+  <div class="grid g3" style="margin-top:16px">
+   <div class="glass card"><h2>Errores recurrentes</h2>${errores.length ? errores.slice(0, 6).map(x => `<div class="mrow"><span class="nm">${esc(x.lbl)}</span><span class="bar"><i style="width:${(x.p * 100).toFixed(0)}%;background:${x.p >= S.cfg.aud.patronPct / 100 ? COL.bad : COL.warn}"></i></span><b>${fmtP(x.p, 0)}</b></div>`).join('') : '<div class="muted">Sin errores detectados.</div>'}</div>
+   <div class="glass card"><h2>Principales causas ra\u00edz</h2>${m.causas.length ? m.causas.slice(0, 6).map(([c, n]) => `<div class="mrow"><span class="nm">${esc(c)}</span><b>${n}</b></div>`).join('') : '<div class="muted">Sin folios auditados.</div>'}</div>
+   <div class="glass card"><h2>Motivos m\u00e1s frecuentes</h2>${m.motivos.slice(0, 6).map(([c, n]) => `<div class="mrow"><span class="nm">${esc(c)}</span><b>${n}</b></div>`).join('') || '<div class="muted">\u2014</div>'}</div>
+  </div>
+  <div class="glass card" style="margin-top:16px"><h2>\u00c1reas de oportunidad y recomendaciones</h2>
+   ${opps.length ? `<div class="chips">${opps.map(x => tag(x.lbl + ' \u00b7 ' + fmtP(x.p, 0), x.p >= S.cfg.aud.patronPct / 100 ? 'bad' : 'warn')).join(' ')}</div>` : ''}
+   <ol class="recs">${recs.map(x => `<li>${esc(x)}</li>`).join('') || '<li>Sin recomendaciones: mantiene los indicadores dentro de los umbrales.</li>'}</ol></div>
+  ${folioProblemCard(own)}
+  ${reconcile(e, r)}
+  <div class="glass card" style="margin-top:16px"><div class="row"><h2 style="margin:0">Evoluci\u00f3n</h2><span class="sp"></span><div class="tabs noprint" style="margin:0">${['semana', 'quincena', 'mes'].map(g => `<button data-g="${g}" class="${g === gran ? 'on' : ''}">${g[0].toUpperCase() + g.slice(1)}</button>`).join('')}</div></div>
+  <div class="chart" style="height:300px">${chart('cEvo', { type: 'bar', data: { labels: ps.map(x => x.label), datasets: [{ type: 'line', label: '% cierre', data: evo.map(x => x?.pctCierre != null ? +(x.pctCierre * 100).toFixed(1) : null), borderColor: PAL[0], yAxisID: 'y', tension: .3 }, { type: 'line', label: 'En tiempo', data: evo.map(x => x?.cumpT != null ? +(x.cumpT * 100).toFixed(1) : null), borderColor: COL.ok, yAxisID: 'y', tension: .3 }, { type: 'line', label: 'Gesti\u00f3n adecuada', data: evo.map(x => x?.aud.pA != null ? +(x.aud.pA * 100).toFixed(1) : null), borderColor: PAL[2], yAxisID: 'y', tension: .3 }, { label: 'Folios asignados', data: evo.map(x => x?.asign || 0), backgroundColor: '#E1E9F8', yAxisID: 'y2', borderRadius: 4 }] }, options: { scales: { y: { ...pctAxis, position: 'left' }, y2: { position: 'right', grid: { drawOnChartArea: false } } } } })}</div><div class="note">Usa los meses cargados en el dashboard (${[...S.loaded].sort().map(mesLabel).join(', ')}).</div></div>
+  <div class="glass card ${S.sel.pdfList ? '' : 'noprint'}" style="margin-top:16px"><div class="row"><h2 style="margin:0">Folios auditados del periodo</h2><span class="sp"></span><label class="noprint muted inline"><input type="checkbox" id="pdfList" ${S.sel.pdfList ? 'checked' : ''}> Incluir en el PDF</label></div>${auditTable(audit, 420)}</div>`;
+  $('#iEj').onchange = ev => { S.sel.ejec = ev.target.value; render(); };
+  $('#pdfList').onchange = ev => { S.sel.pdfList = ev.target.checked; render(); };
+  $$('#v-individual .tabs button').forEach(b => b.onclick = () => { S.sel.gran = b.dataset.g; render(); });
+}
+function recomendaciones(m, errores) {
+  const out = [];
+  if (m.vencidos) out.push(`Depurar ${m.vencidos} folio(s) que siguen vencidos: cerrar los que ya tienen respuesta y escalar los que dependen de cl\u00ednica o experto t\u00e9cnico.`);
+  if (m.fsVen) out.push(`Contactar hoy a ${m.fsVen} paciente(s) sin primer comentario con m\u00e1s de 48 h.`);
+  if (m.cumpT != null && m.cumpT < 0.8) out.push(`Cumplimiento en tiempo de ${fmtP(m.cumpT)}: priorizar diariamente los folios m\u00e1s pr\u00f3ximos a vencer (${metaLbl()}).`);
+  errores.filter(x => x.p >= 0.15).slice(0, 3).forEach(x => out.push(`${x.lbl} en ${fmtP(x.p, 0)} de sus folios auditados: ${RECOM[x.id]}`));
+  if (m.aud.n && (m.aud.I + m.aud.N) / m.aud.n >= 0.2) out.push('Revisar juntas 5 folios con gesti\u00f3n inadecuada y acordar el est\u00e1ndar m\u00ednimo de registro.');
+  return out;
+}
+function reconcile(e, r) {
+  const fs = S.folios.filter(f => f.owner === e && inR(f.fReg, r) && geoOk(f));
+  const ea = fs.filter(f => f.encuesta && f.auto).length, em = fs.filter(f => f.encuesta && !f.auto).length, ot = fs.length - ea - em;
+  const u = S.flt.universo; const ev = { gestion: ot + em, otros: ot, todos: ot + em, encuesta: em, encManual: em, encAuto: 0 }[u];
+  return `<div class="glass card" style="margin-top:16px"><h2>\u00bfDe d\u00f3nde salen sus folios asignados?</h2><table class="plain"><tbody>
+  <tr><td>Folios registrados en el periodo</td><td class="n"><b>${fmtN(fs.length)}</b></td></tr>
+  <tr><td class="ind">Encuesta digital \u00b7 cierre autom\u00e1tico (no se eval\u00faa)</td><td class="n">${fmtN(ea)}</td></tr>
+  <tr><td class="ind">Encuesta digital \u00b7 gesti\u00f3n manual</td><td class="n">${fmtN(em)}</td></tr>
+  <tr><td class="ind">Otros medios</td><td class="n">${fmtN(ot)}</td></tr>
+  <tr class="tot"><td>Folios evaluados (universo: ${UNI_LBL[u]})</td><td class="n"><b>${fmtN(ev)}</b></td></tr></tbody></table></div>`;
+}
+
+/** Todos los folios de la ejecutiva separados en "con problemas" y "bien". */
+function folioProblemCard(fs) {
+  const st = S.sel.fpc || 'mal';
+  const conP = fs.filter(f => problemas(f).length), bien = fs.filter(f => !problemas(f).length && f.cls !== 'cancelado');
+  const list = (st === 'mal' ? conP : st === 'bien' ? bien : fs).slice().sort((a, b) => problemas(b).length - problemas(a).length || a.fReg - b.fReg);
+  setTimeout(() => { $$('[data-fpc]').forEach(b => b.onclick = () => { S.sel.fpc = b.dataset.fpc; render(); }); const x = $('#xl_fpc'); if (x) x.onclick = () => exportFolioList(list); });
+  const tabs = [['mal', 'Con problemas', conP.length], ['bien', 'Bien gestionados', bien.length], ['todos', 'Todos', fs.length]];
+  return `<div class="glass card" style="margin-top:16px"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">Sus folios del periodo</h2><span class="sp"></span><button class="btn sm noprint" id="xl_fpc">Exportar a Excel</button></div>
+  <div class="tabs noprint">${tabs.map(([k, l, n]) => `<button data-fpc="${k}" class="${st === k ? 'on' : ''}">${l} (${fmtN(n)})</button>`).join('')}</div>
+  ${table([{ l: 'Folio', v: f => `<b>${esc(f.folio)}</b>`, s: f => f.folio }, { l: 'Registro', v: f => fmtDT(f.fReg), s: f => f.fReg }, { l: 'Estatus', v: f => clsPill(f.cls), s: f => f.cls }, { l: 'Sucursal', v: f => esc(f.sucursal) }, { l: 'Motivo(s)', v: f => esc(f.motivos.join(' \u00b7 ')) },
+    { l: 'Apertura', v: f => slaPill(f.slaFs, apLbl()) + ' ' + nw(fsTxt(f)), s: f => f.hFs ?? f.elapsed ?? -1 }, { l: 'Cierre', v: f => slaPill(f.slaC7, metaLbl()) + ' ' + nw(fmtH(f.hC ?? f.elapsed)), s: f => f.hC ?? f.elapsed ?? -1 },
+    { l: 'Problemas', v: f => problemas(f).map(([t, k]) => tag(t, k)).join(' ') || tag('Sin problemas', 'ok'), s: f => problemas(f).length },
+    { l: 'Causa probable del vencimiento', v: f => (f.slaC7 === 'vencido' || f.slaC7 === 'fuera') && f.cv ? `<span class="obs">${esc(f.cv)}</span>` : '<span class="muted">\u2014</span>', s: f => f.cv || '' }],
+    list.slice(0, 1500), { click: f => abrirFolio(f.folio), max: 560 })}
+  <div class="note">"Con problemas" = apertura o cierre fuera de tiempo, gesti\u00f3n inadecuada, sin investigaci\u00f3n (C3), seguimiento deficiente (C4) o sin causa ra\u00edz (C6) seg\u00fan la auditor\u00eda. Los criterios de auditor\u00eda solo existen para folios cerrados.</div></div>`;
+}
+
+/* ---------- Vencimientos: reglas, rankings semaforizados, causas y tiempos ---------- */
+function vVencimientos(el) {
+  const r = curRange(); const tab = S.sel.vtab || 'cierre'; const dim = S.sel.vdim || 'motivo';
+  const K = tab === 'cierre'
+    ? { p: 'pctVencC', v: 'cVenc', ok: 'cOkT', ab: 'cAbVen', tarde: 'cTarde', pl: 'cPl', sem: 'semC', t: 'Cierre ' + metaLbl(), tardeL: 'Cerrados tarde', abL: 'Abiertos vencidos' }
+    : { p: 'pctVencAp', v: 'apVenc', ok: 'apOk', ab: 'apSinCom', tarde: 'apTarde', pl: 'apPl', sem: 'semAp', t: 'Apertura ' + apLbl(), tardeL: 'Comentados tarde', abL: 'Sin comentario vencidos' };
+  const all = execStats(r).filter(m => (m[K.ok] + m[K.v] + m[K.pl]) > 0);
+  const L = all.slice().sort((a, b) => (a[K.p] ?? 9) - (b[K.p] ?? 9) || a[K.v] - b[K.v] || b[K.ok] - a[K.ok]);
+  const SEM = { ok: ['Verde', 'ok'], warn: ['Amarillo', 'warn'], bad: ['Rojo', 'bad'], na: ['Sin datos', 'n'] };
+  const nSem = k => L.filter(m => m[K.sem] === k).length;
+  const fs = cohort(r);
+  const pendHoy = S.folios.filter(f => !f.auto && !f.reasig && geoOk(f) && (!S.flt.ejec || f.owner === S.flt.ejec) && team().includes(f.owner) && f.open && (f.slaC7 === 'vencido' || f.slaFs === 'vencido')).sort((a, b) => b.elapsed - a.elapsed);
+  const venc = fs.filter(f => f.slaC7 === 'vencido' || f.slaC7 === 'fuera');
+  const cz = countBy(venc, f => f.cv || 'Sin dato (reconstruir meses)');
+  const czTop = cz.slice(0, 6).map(x => x[0]);
+  const porEjC = team().map(e => ({ e, c: czTop.map(c => venc.filter(f => f.owner === e && (f.cv || 'Sin dato (reconstruir meses)') === c).length) })).filter(x => x.c.some(Boolean));
+  // tiempos por motivo / \u00e1rea / sucursal
+  const G = new Map();
+  for (const f of fs) { const keys = dim === 'motivo' ? [...new Set(f.motivos)] : dim === 'area' ? f.areas : [f.sucursal]; for (const k of keys) { if (!G.has(k)) G.set(k, []); G.get(k).push(f); } }
+  const dimRows = [...G].map(([k, a]) => { const cl = a.filter(f => f.hC != null); const d = cl.map(f => f.hC / 24); const ev = a.filter(f => f.slaC7 === 'cumple' || f.slaC7 === 'fuera' || f.slaC7 === 'vencido');
+    return { k, n: a.length, cerr: cl.length, prom: mean(d), med: median(d), sd: d.length > 1 ? sdev(d) : null, pv: ratio(a.filter(f => f.slaC7 === 'fuera' || f.slaC7 === 'vencido').length, ev.length), ab: a.filter(f => f.slaC7 === 'vencido').length, zona: a[0].zona }; })
+    .filter(x => x.cerr >= 3 || x.ab).sort((a, b) => (b.prom ?? -1) - (a.prom ?? -1));
+  const reas = S.folios.filter(f => f.reasig && inR(f.fReg, r) && geoOk(f) && (!S.flt.ejec || f.owner === S.flt.ejec));
+  const hayReasCfg = Object.keys(S.ses.reasignados || {}).length > 0;
+  el.innerHTML = `${header('Vencimientos (aperturas y cierres)', `${esc(r.label)} \u00b7 cohorte por Fecha Registro \u00b7 sin cierres autom\u00e1ticos ni reasignados`, `<button class="btn" id="vXl"><span class="ms">download</span>Exportar ranking</button>`)}
+  <div class="banner info glass compact"><b>Reglas:</b> <b>Apertura</b> = del registro al primer comentario, m\u00e1ximo <b>${S.cfg.slaFsH} h</b>. <b>Cierre</b> = del registro al cierre, m\u00e1ximo <b>${S.cfg.cierreDias} d\u00edas naturales</b> (${S.cfg.cierreDias * 24} h); a partir del d\u00eda ${S.cfg.cierreDias + 1} el folio est\u00e1 <b>vencido</b>. "Vencido" suma los atendidos tarde y los que siguen pendientes. "A\u00fan a tiempo" = abiertos que todav\u00eda no cumplen el plazo.</div>
+  <div class="glass card" style="margin-bottom:20px"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">Folios vencidos pendientes hoy</h2>${tag(fmtN(pendHoy.length) + ' folios', pendHoy.length ? 'bad' : 'ok')}<span class="sp"></span><span class="muted small">Meta: ninguna ejecutiva con folios vencidos \u00b7 tambi\u00e9n llegan por correo cada ma\u00f1ana</span></div>
+  ${pendHoy.length ? table([{ l: 'Ejecutiva', v: f => `<b>${esc(f.owner)}</b>`, s: f => f.owner }, { l: 'Folio', v: f => esc(f.folio), s: f => f.folio }, { l: 'Registro', v: f => fmtDT(f.fReg), s: f => f.fReg }, { l: 'D\u00edas', n: 1, v: f => `<span class="down">${Math.floor(f.elapsed / 24)}</span>`, s: f => f.elapsed },
+    { l: 'Situaci\u00f3n', v: f => f.slaC7 === 'vencido' ? tag(f.hFs == null ? 'Cierre vencido y sin comentario' : 'Cierre vencido', 'bad') : tag('Sin primer comentario (+48 h)', 'warn'), s: f => f.slaC7 }, { l: 'Sucursal', v: f => esc(f.sucursal) }, { l: 'Motivo', v: f => esc(f.motivos.join(' \u00b7 ')) },
+    { l: 'Causa probable', v: f => f.slaC7 === 'vencido' && f.cv ? `<b>${esc(f.cv)}</b><span class="obs">${esc(f.cvEvid || '')}</span>` : '<span class="muted">\u2014</span>', s: f => f.cv || '' }], pendHoy.slice(0, 1500), { click: f => abrirFolio(f.folio), max: 420 }) : '<div class="muted">Sin folios vencidos pendientes. \u2714</div>'}</div>
+  <div class="tabs"><button data-vt="cierre" class="${tab === 'cierre' ? 'on' : ''}">Ranking de cierres (${metaLbl()})</button><button data-vt="apertura" class="${tab === 'apertura' ? 'on' : ''}">Ranking de aperturas (${apLbl()})</button></div>
+  <div class="kpis">${kpi('Ejecutivas en verde', fmtN(nSem('ok')), `\u2264${fmtP(S.cfg.semVerde, 0)} vencidos y sin pendientes vencidos`, 'ok')}${kpi('Ejecutivas en amarillo', fmtN(nSem('warn')), `hasta ${fmtP(S.cfg.semAmarillo, 0)} vencidos`, 'warn')}${kpi('Ejecutivas en rojo', fmtN(nSem('bad')), `m\u00e1s de ${fmtP(S.cfg.semAmarillo, 0)} vencidos`, nSem('bad') ? 'bad' : 'ok')}</div>
+  <div class="glass card" style="margin-bottom:20px"><h2>${K.t}: ranking semaforizado</h2>
+   ${table([{ l: '#', n: 1, v: (m) => `<b>${L.indexOf(m) + 1}</b>`, s: m => L.indexOf(m) }, { l: 'Ejecutiva', v: m => `<span class="sem ${m[K.sem]}"></span><b>${esc(m.ejec)}</b>`, s: m => m.ejec }, { l: 'Sem\u00e1foro', v: m => tag(SEM[m[K.sem]][0], SEM[m[K.sem]][1]), s: m => ({ ok: 0, warn: 1, bad: 2, na: 3 })[m[K.sem]] },
+     { l: 'En tiempo', n: 1, v: m => fmtN(m[K.ok]), s: m => m[K.ok] }, { l: 'Vencidos', n: 1, v: m => m[K.v] ? `<span class="down">${fmtN(m[K.v])}</span>` : '0', s: m => m[K.v] }, { l: K.tardeL, n: 1, v: m => fmtN(m[K.tarde]), s: m => m[K.tarde] }, { l: K.abL, n: 1, v: m => m[K.ab] ? `<span class="down">${fmtN(m[K.ab])}</span>` : '0', s: m => m[K.ab] },
+     { l: '% vencidos', n: 1, v: m => fmtP(m[K.p]), s: m => m[K.p] ?? 9 }, { l: 'A\u00fan a tiempo', n: 1, v: m => fmtN(m[K.pl]), s: m => m[K.pl] },
+     ...(tab === 'cierre' ? [{ l: 'D\u00edas a cierre (prom \u00b1 DE)', n: 1, v: m => m.avgCd != null ? `${m.avgCd.toFixed(1)} \u00b1 ${m.sdCd != null ? m.sdCd.toFixed(1) : '\u2014'}` : '\u2014', s: m => m.avgCd ?? -1 }] : [{ l: 'Horas a 1er comentario (prom)', n: 1, v: m => fmtH(m.avgFs), s: m => m.avgFs ?? -1 }]),
+     { l: 'Folios/d\u00eda (prom \u00b1 DE)', n: 1, v: m => m.cargaProm != null ? `${m.cargaProm.toFixed(1)} \u00b1 ${m.cargaSd != null ? m.cargaSd.toFixed(1) : '\u2014'}` : '\u2014', s: m => m.cargaProm ?? -1 }], L, { click: m => go('individual', { ejec: m.ejec }), max: 640 })}
+   <div class="note">Orden: menor % de vencidos primero; empate \u2192 menos vencidos y m\u00e1s en tiempo. Sem\u00e1foro: <b>verde</b> \u2264${fmtP(S.cfg.semVerde, 0)} vencidos y ning\u00fan pendiente vencido \u00b7 <b>amarillo</b> \u2264${fmtP(S.cfg.semAmarillo, 0)} \u00b7 <b>rojo</b> arriba (ajustable en Config: SEM_VERDE_PCT y SEM_AMARILLO_PCT). DE = desviaci\u00f3n est\u00e1ndar: qu\u00e9 tanto var\u00edan sus tiempos o su carga diaria; mientras m\u00e1s baja, m\u00e1s constante.</div></div>
+  <div class="grid g2 dpair" style="margin-bottom:20px">
+   <div class="glass card"><h2>${K.t} por ejecutiva</h2><div class="chart" style="height:${Math.max(260, L.length * 26 + 70)}px">${chart('cVr', { type: 'bar', data: { labels: L.map(m => m.ejec.split(' ').slice(0, 2).join(' ')), datasets: [{ label: 'En tiempo', data: L.map(m => m[K.ok]), backgroundColor: COL.ok }, { label: K.tardeL, data: L.map(m => m[K.tarde]), backgroundColor: COL.warn }, { label: K.abL, data: L.map(m => m[K.ab]), backgroundColor: COL.bad }, { label: 'A\u00fan a tiempo', data: L.map(m => m[K.pl]), backgroundColor: '#C9D2EA' }] }, options: { indexAxis: 'y', plugins: { legend: { position: 'top', align: 'end' } }, scales: { x: { stacked: true }, y: { stacked: true, ticks: { autoSkip: false } } } } })}</div></div>
+   <div class="glass card"><h2>\u00bfPor qu\u00e9 se vencen? (cierres vencidos)</h2><div class="chart" style="height:${Math.max(240, Math.min(10, cz.length) * 30 + 60)}px">${chart('cVcz', { type: 'bar', data: { labels: cz.slice(0, 10).map(x => x[0]), datasets: [{ label: 'Folios', data: cz.slice(0, 10).map(x => x[1]), backgroundColor: COL.bad }] }, options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { y: { ticks: { autoSkip: false } } } } })}</div>
+   <div class="note">Causa probable le\u00edda del historial: se toma el comentario m\u00e1s reciente que menciona qu\u00e9 se estaba esperando (gerente o cl\u00ednica, experto t\u00e9cnico, reembolso, resultados o sistema, paciente no localizado, reasignaci\u00f3n). Es una lectura por palabras clave; el detalle de cada folio muestra el texto en que se bas\u00f3.</div></div>
+  </div>
+  <div class="glass card" style="margin-bottom:20px"><h2>Causas de vencimiento por ejecutiva</h2>${table([{ l: 'Ejecutiva', v: x => `<b>${esc(x.e)}</b>`, s: x => x.e }, ...czTop.map((c, i) => ({ l: esc(c.length > 24 ? c.slice(0, 22) + '\u2026' : c), n: 1, v: x => x.c[i] ? `<span class="heat" style="--a:${Math.min(1, x.c[i] / 6)}">${x.c[i]}</span>` : '', s: x => x.c[i] })), { l: 'Total', n: 1, v: x => x.c.reduce((a, b) => a + b, 0), s: x => x.c.reduce((a, b) => a + b, 0) }], porEjC, { click: x => go('individual', { ejec: x.e }), max: 420 })}</div>
+  <div class="glass card" style="margin-bottom:20px"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">\u00bfQu\u00e9 tarda m\u00e1s en cerrarse?</h2><span class="sp"></span><div class="tabs" style="margin:0">${[['motivo', 'Motivo'], ['area', '\u00c1rea'], ['sucursal', 'Sucursal']].map(([k, l]) => `<button data-vd="${k}" class="${dim === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+   ${table([{ l: dim === 'motivo' ? 'Motivo' : dim === 'area' ? '\u00c1rea' : 'Sucursal', v: x => `<b>${esc(x.k)}</b>${dim === 'sucursal' ? `<br><span class="muted">${esc(x.zona)}</span>` : ''}`, s: x => x.k }, { l: 'Folios', n: 1, v: x => fmtN(x.n), s: x => x.n }, { l: 'Cerrados', n: 1, v: x => fmtN(x.cerr), s: x => x.cerr },
+     { l: 'Prom. d\u00edas a cierre', n: 1, v: x => x.prom != null ? `<b>${x.prom.toFixed(1)}</b>` : '\u2014', s: x => x.prom ?? -1 }, { l: 'Mediana', n: 1, v: x => x.med != null ? x.med.toFixed(1) : '\u2014', s: x => x.med ?? -1 }, { l: 'Desv. est.', n: 1, v: x => x.sd != null ? x.sd.toFixed(1) : '\u2014', s: x => x.sd ?? -1 },
+     { l: '% vencidos', n: 1, v: x => `<span class="sem ${semaforo(x.pv, S.cfg.semVerde, S.cfg.semAmarillo, true)}"></span>` + fmtP(x.pv), s: x => x.pv ?? -1 }, { l: 'Abiertos vencidos', n: 1, v: x => x.ab ? `<span class="down">${fmtN(x.ab)}</span>` : '0', s: x => x.ab }], dimRows.slice(0, 300), { max: 460 })}
+   <div class="note">Ordenado de mayor a menor tiempo promedio de cierre (d\u00edas naturales desde el registro). Se muestran los que tienen al menos 3 cierres o alg\u00fan abierto vencido. Un folio con varios motivos cuenta en cada uno.</div></div>
+  <div class="glass card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">Folios reasignados</h2>${tag(fmtN(reas.length) + ' en el periodo', 'info')}<span class="sp"></span><span class="muted small">No entran en rankings ni vencidos de las ejecutivas</span></div>
+   ${hayReasCfg ? (reas.length ? table([{ l: 'Folio', v: f => `<b>${esc(f.folio)}</b>`, s: f => f.folio }, { l: 'Ejecutiva en el reporte', v: f => esc(f.owner) }, { l: 'Registro', v: f => fmtDT(f.fReg), s: f => f.fReg }, { l: 'Estatus', v: f => clsPill(f.cls), s: f => f.cls }, { l: 'Cierre', v: f => slaPill(f.slaC7, metaLbl()), s: f => f.slaC7 }, { l: 'Sucursal', v: f => esc(f.sucursal) }, { l: 'Registro de reasignaci\u00f3n', v: f => `<span class="obs">${esc(f.reasigDet)}</span>` }], reas, { click: f => abrirFolio(f.folio), max: 420 }) : '<div class="muted">Ning\u00fan folio del periodo aparece en el archivo de reasignados.</div>')
+     : `<div class="muted">Falta configurar el archivo de reasignados: ${S.ses.rol === 'ADMIN' ? 'en la hoja <b>Config</b> captura <b>REASIGNADOS_ID</b> con el ID del archivo de Drive donde el equipo anota los folios (debe tener una columna "Folio").' : 'p\u00eddele al administrador que configure REASIGNADOS_ID.'}</div>`}</div>`;
+  $$('[data-vt]').forEach(b => b.onclick = () => { S.sel.vtab = b.dataset.vt; render(); });
+  $$('[data-vd]').forEach(b => b.onclick = () => { S.sel.vdim = b.dataset.vd; render(); });
+  $('#vXl').onclick = () => {
+    const rows = [['Posici\u00f3n', 'Ejecutiva', 'Sem\u00e1foro', 'En tiempo', 'Vencidos', K.tardeL, K.abL, '% vencidos', 'A\u00fan a tiempo', 'Prom. d\u00edas a cierre', 'Desv. est. d\u00edas a cierre', 'Horas a 1er comentario (prom)', 'Folios por d\u00eda (prom)', 'Desv. est. folios por d\u00eda', 'D\u00edas con gesti\u00f3n']];
+    L.forEach((m, i) => rows.push([i + 1, m.ejec, SEM[m[K.sem]][0], m[K.ok], m[K.v], m[K.tarde], m[K.ab], m[K.p], m[K.pl], m.avgCd, m.sdCd, m.avgFs, m.cargaProm, m.cargaSd, m.diasActivos]));
+    xlsxDescarga([['Ranking ' + tab, rows], ['Vencidos pendientes', [['Folio', 'Ejecutiva', 'Registro', 'D\u00edas', 'Cierre', 'Apertura', 'Sucursal', 'Motivo', 'Causa probable', 'Evidencia']].concat(pendHoy.map(f => [f.folio, f.owner, fmtDT(f.fReg), Math.floor(f.elapsed / 24), f.slaC7, f.slaFs, f.sucursal, f.motivos.join(' \u00b7 '), f.cv || '', f.cvEvid || '']))]], 'vencimientos_' + r.key);
+  };
+}
+
+/* ---------- An\u00e1lisis de causas ra\u00edz ---------- */
+function vCausas(el) {
+  const r = curRange(); const fs = cohort(r).filter(f => f.aud);
+  const cz = countBy(fs, f => f.aud.causa); const det = cz.filter(x => x[0] !== 'No determinable');
+  const fuente = { C: fs.filter(f => f.aud.fuente === 'C').length, T: fs.filter(f => f.aud.fuente === 'T').length, N: fs.filter(f => f.aud.fuente === 'N').length };
+  const topC = det.slice(0, 8).map(x => x[0]);
+  const suc = countBy(fs.filter(f => f.aud.causa !== 'No determinable'), f => f.sucursal).slice(0, 15);
+  const matriz = suc.map(([s]) => ({ s, z: S.folios.find(f => f.sucursal === s)?.zona, c: topC.map(c => fs.filter(f => f.sucursal === s && f.aud.causa === c).length) }));
+  const porEj = team().map(e => { const x = fs.filter(f => f.owner === e); const nd = x.filter(f => f.aud.causa === 'No determinable').length; return { e, n: x.length, nd, top: countBy(x.filter(f => f.aud.causa !== 'No determinable'), f => f.aud.causa)[0] }; }).filter(x => x.n);
+  const sems = periodsBetween(r.from, r.to, 'semana');
+  el.innerHTML = `${header('An\u00e1lisis de causas ra\u00edz', `${esc(r.label)} \u00b7 ${fmtN(fs.length)} folios cerrados auditados`)}
+  <div class="banner info glass">La causa ra\u00edz se toma de la columna <b>Causas</b> del reporte cuando existe (${fmtN(fuente.C)} folios). Si est\u00e1 vac\u00eda, se <b>infiere</b> del texto escrito por la ejecutiva con palabras clave trazables (${fmtN(fuente.T)} folios, marcadas como "inferida"). Si no hay informaci\u00f3n, queda como <b>No determinable</b> (${fmtN(fuente.N)} folios). No se usa el comentario del paciente para no confundir queja con causa.</div>
+  <div class="grid g2"><div class="glass card"><h2>Causas identificadas</h2><div class="chart" style="height:${Math.max(260, Math.min(15, det.length) * 28 + 60)}px">${chart('cCz', { type: 'bar', data: { labels: det.slice(0, 15).map(x => x[0].length > 34 ? x[0].slice(0, 32) + '\u2026' : x[0]), datasets: [{ label: 'Folios', data: det.slice(0, 15).map(x => x[1]), backgroundColor: COL.pri, borderRadius: 6 }] }, options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { y: { ticks: { autoSkip: false } } } } })}</div></div>
+  <div class="glass card"><h2>Fuente de la causa</h2><div class="chart" style="height:260px">${chart('cCzF', { type: 'doughnut', data: { labels: ['Columna Causas', 'Inferida del texto', 'No determinable'], datasets: [{ data: [fuente.C, fuente.T, fuente.N], backgroundColor: [COL.ok, COL.info, COL.mute], borderWidth: 0 }] }, options: { cutout: '65%' } })}</div></div></div>
+  <div class="glass card" style="margin-top:16px"><h2>Tendencia semanal (top 5 causas)</h2><div class="chart">${chart('cCzT', { type: 'line', data: { labels: sems.map(s => s.label), datasets: topC.slice(0, 5).map((c, i) => ({ label: c, data: sems.map(s => fs.filter(f => f.aud.causa === c && inR(f.fReg, s)).length), borderColor: PAL[i], tension: .3 })) } })}</div></div>
+  <div class="glass card" style="margin-top:16px"><h2>Sucursales \u00d7 causa (top 15 sucursales)</h2>${table([{ l: 'Sucursal', v: x => `<b>${esc(x.s)}</b><br><span class="muted">${esc(x.z)}</span>`, s: x => x.s }, ...topC.map((c, i) => ({ l: esc(c.length > 22 ? c.slice(0, 20) + '\u2026' : c), n: 1, v: x => x.c[i] ? `<span class="heat" style="--a:${Math.min(1, x.c[i] / 8)}">${x.c[i]}</span>` : '', s: x => x.c[i] })), { l: 'Total', n: 1, v: x => x.c.reduce((a, b) => a + b, 0), s: x => x.c.reduce((a, b) => a + b, 0) }], matriz)}</div>
+  <div class="glass card" style="margin-top:16px"><h2>Por ejecutiva</h2>${table([{ l: 'Ejecutiva', v: x => esc(x.e) }, { l: 'Auditados', n: 1, v: x => x.n }, { l: 'Causa m\u00e1s frecuente', v: x => x.top ? esc(x.top[0]) + ` (${x.top[1]})` : '\u2014' }, { l: 'No determinable', n: 1, v: x => `${x.nd} (${fmtP(x.nd / x.n, 0)})`, s: x => x.nd / x.n }], porEj, { click: x => go('individual', { ejec: x.e }) })}</div>`;
+}
+
+/* ---------- Consulta de folios ---------- */
+function vFolios(el) {
+  const r = curRange(); const le = S.sel.listEjec ?? (S.flt.ejec || '');
+  const base = S.folios.filter(x => (!le || x.owner === le) && inR(x.fReg, r) && geoOk(x) && (le || team().includes(x.owner)));
+  const resumen = !le ? team().map(o => { const b = base.filter(x => x.owner === o); return { o, n: b.length, cerr: b.filter(x => x.cls === 'cerrado').length, seg: b.filter(x => x.cls === 'seguimiento').length, pend: b.filter(x => x.cls === 'pendiente').length, term: b.filter(x => x.cls === 'termino').length, canc: b.filter(x => x.cls === 'cancelado').length, ven: b.filter(x => slaMeta(x) === 'vencido').length, enc: b.filter(x => x.encuesta).length }; }).filter(x => x.n) : [];
+  el.innerHTML = `${header('Consulta de folios', `${esc(r.label)} \u00b7 todos los canales`)}
+  <div class="glass card searchbar"><input id="qF" placeholder="N\u00famero de folio\u2026" inputmode="numeric"><button class="btn pri" id="qB">Abrir folio</button><span class="muted">Muestra historial completo, cambios entre cargas y la evidencia de la auditor\u00eda.</span></div>
+  <div class="glass card" style="margin-top:16px"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">Listado por ejecutiva</h2><span class="sp"></span><label class="inline muted">Ejecutiva <select id="lEj"><option value="">Todas (resumen)</option>${team().map(x => `<option ${x === le ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label></div>
+  ${le ? folioListPanel('srchList', base) : table([{ l: 'Ejecutiva', v: x => `<b>${esc(x.o)}</b>` }, { l: 'Folios', n: 1, v: x => fmtN(x.n), s: x => x.n }, { l: 'Pendiente', n: 1, v: x => fmtN(x.pend), s: x => x.pend }, { l: 'En seguimiento', n: 1, v: x => fmtN(x.seg), s: x => x.seg }, { l: 'T\u00e9rmino', n: 1, v: x => fmtN(x.term), s: x => x.term }, { l: 'Cerrado', n: 1, v: x => fmtN(x.cerr), s: x => x.cerr }, { l: 'Cancelado', n: 1, v: x => fmtN(x.canc), s: x => x.canc }, { l: 'Abiertos vencidos', n: 1, v: x => x.ven ? `<span class="down">${fmtN(x.ven)}</span>` : '0', s: x => x.ven }, { l: 'Encuesta digital', n: 1, v: x => fmtN(x.enc), s: x => x.enc }], resumen, { click: x => { S.sel.listEjec = x.o; render(); } }) + '<div class="note">Clic en una ejecutiva para ver su listado.</div>'}</div>`;
+  const doQ = () => { const v = $('#qF').value.trim(); if (v) abrirFolio(v); };
+  $('#qB').onclick = doQ; $('#qF').onkeydown = ev => { if (ev.key === 'Enter') doQ(); };
+  $('#lEj').onchange = ev => { S.sel.listEjec = ev.target.value; render(); };
+}
+const canalKey = f => f.encuesta ? (f.auto ? 'Encuesta \u00b7 autom\u00e1tico' : 'Encuesta \u00b7 manual') : 'Otros medios';
+function canalPill(f) { return f.encuesta ? (f.auto ? pill('Encuesta \u00b7 auto') : pill('Encuesta \u00b7 manual', 'info')) : pill('Otros medios', 'ok'); }
+function fsTxt(f) { if (f.hFs != null) return fmtH(f.hFs); if (f.open) return fmtH(f.elapsedReg) + ' sin comentario'; return '\u2014'; }
+function folioTable(fs, max = 520) {
+  return table([{ l: 'Folio', v: f => `<b>${esc(f.folio)}</b>`, s: f => f.folio }, { l: 'Registro', v: f => fmtDT(f.fReg), s: f => f.fReg }, { l: 'Estatus', v: f => clsPill(f.cls), s: f => f.cls }, { l: 'Canal', v: f => canalPill(f), s: f => canalKey(f) }, { l: 'Sucursal', v: f => esc(f.sucursal) }, { l: 'Motivo(s)', v: f => esc(f.motivos.join(' \u00b7 ')) }, { l: 'Apertura (registro \u2192 1er comentario)', v: f => slaPill(f.slaFs, apLbl()) + ' ' + nw(fsTxt(f)), s: f => f.hFs ?? f.elapsedReg ?? -1 }, { l: 'Cierre (registro \u2192 cierre)', v: f => slaPill(slaMeta(f), metaLbl()) + ' ' + nw(fmtH(f.hC ?? f.elapsed)), s: f => f.hC ?? f.elapsed ?? -1 }, { l: 'Auditor\u00eda', v: f => f.aud ? calPill(f.aud.cal) : '<span class="muted">\u2014</span>', s: f => f.aud ? f.aud.score : -1 }], fs.slice(0, 2000), { click: f => abrirFolio(f.folio), max });
+}
+function folioListPanel(id, base) {
+  const st = S.sel[id] || (S.sel[id] = { est: '', canal: '' });
+  const ests = [['', 'Todos', () => true], ['pendiente', 'Pendiente', f => f.cls === 'pendiente'], ['seguimiento', 'En seguimiento', f => f.cls === 'seguimiento'], ['termino', 'T\u00e9rmino', f => f.cls === 'termino'], ['cerrado', 'Cerrado', f => f.cls === 'cerrado'], ['cancelado', 'Cancelado', f => f.cls === 'cancelado'], ['problemas', 'Con problemas', f => problemas(f).length > 0], ['vencido', 'Abiertos vencidos (+7 d\u00edas)', f => slaMeta(f) === 'vencido'], ['fuera', 'Cerrados tarde (+7 d\u00edas)', f => slaMeta(f) === 'fuera'], ['fsv', 'Apertura vencida (+48 h)', f => f.slaFs === 'fuera' || f.slaFs === 'vencido'], ['reas', 'Reasignados', f => f.reasig], ['inad', 'Gesti\u00f3n inadecuada', f => f.aud && (f.aud.cal === 'I' || f.aud.cal === 'N')]];
+  const canals = [['', 'Todos los canales', () => true], ['ot', 'Otros medios', f => !f.encuesta], ['em', 'Encuesta \u00b7 manual', f => f.encuesta && !f.auto], ['ea', 'Encuesta \u00b7 autom\u00e1tico', f => f.encuesta && f.auto]];
+  const fe = ests.find(x => x[0] === st.est)[2], fc = canals.find(x => x[0] === st.canal)[2];
+  const list = base.filter(f => fe(f) && fc(f)).sort((a, b) => b.fReg - a.fReg);
+  setTimeout(() => { $$(`[data-fl="${id}"]`).forEach(b => b.onclick = () => { st[b.dataset.t] = b.dataset.v; render(); }); const x = $(`#xl_${id}`); if (x) x.onclick = () => exportFolioList(list); });
+  return `<div class="tabs noprint">${ests.map(([k, l, fn]) => `<button data-fl="${id}" data-t="est" data-v="${k}" class="${st.est === k ? 'on' : ''}">${l} (${fmtN(base.filter(f => fn(f) && fc(f)).length)})</button>`).join('')}</div>
+  <div class="tabs noprint">${canals.map(([k, l, fn]) => `<button data-fl="${id}" data-t="canal" data-v="${k}" class="${st.canal === k ? 'on' : ''}">${l} (${fmtN(base.filter(f => fn(f) && fe(f)).length)})</button>`).join('')}<span class="sp"></span><button class="btn sm" id="xl_${id}">Exportar a Excel</button></div>${folioTable(list, 560)}`;
+}
+function exportFolioList(list) {
+  const rows = [['Folio', 'Fecha registro', 'Estatus', 'Ejecutiva', 'Cerr\u00f3', 'Canal', 'Zona', 'Sucursal', 'Motivos', '1er comentario', 'Horas registro \u2192 1er comentario', 'Apertura ' + apLbl(), 'Fecha cierre', 'Horas cierre / transcurridas', 'Cierre ' + metaLbl(), 'Problemas', 'Causa probable del vencimiento', 'Reasignado', 'Auditor\u00eda']];
+  for (const f of list) rows.push([f.folio, fmtDT(f.fReg), f.estatus, f.owner, f.closer || '', canalKey(f), f.zona, f.sucursal, f.motivos.join(' \u00b7 '), fmtDT(f.fApert), f.hFs != null ? +f.hFs.toFixed(1) : '', f.slaFs, fmtDT(f.fCierre), +(f.hC ?? f.elapsed ?? 0).toFixed(1), slaMeta(f), problemas(f).map(x => x[0]).join(' \u00b7 '), f.cv || '', f.reasig ? 'SI' : '', f.aud ? CAL_LBL[f.aud.cal] : '']);
+  xlsxDescarga([['Folios', rows]], 'Listado_folios.xlsx');
+}
+
+/* ---------- Detalle de folio (consulta al servidor; valida permisos) ---------- */
+async function abrirFolio(folio) {
+  openModal('<div class="loading">Consultando folio\u2026</div>');
+  let d; try { d = await call('apiFolio', String(folio)); } catch (e) { openModal(`<h2>Folio ${esc(folio)}</h2><div class="banner bad">${esc(e.message)}</div><button class="btn" onclick="closeModal()">Cerrar</button>`); return; }
+  if (!d) { openModal(`<h2>Folio ${esc(folio)}</h2><div class="banner warn">No se encontr\u00f3 el folio en la base.</div><button class="btn" onclick="closeModal()">Cerrar</button>`); return; }
+  const f = S.fMap.get(String(folio));
+  const rows = d.rows; const r0 = rows[0];
+  const ents = []; const seen = new Set();
+  const RE = /^([A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1\u00dc][A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1\u00dc .]+?) - (\d{2})\/(\d{2})\/(\d{4}) - /gm;
+  rows.forEach(r => { const h = String(r.hist || ''); const idx = []; let m; RE.lastIndex = 0; while ((m = RE.exec(h))) idx.push({ a: m[1].trim(), d: Date.UTC(+m[4], +m[3] - 1, +m[2]), s: m.index, hs: m.index + m[0].length }); idx.forEach((e, i) => { const t = h.slice(e.hs, i + 1 < idx.length ? idx[i + 1].s : h.length).trim(); const k = e.a + e.d + t.slice(0, 50); if (!seen.has(k)) { seen.add(k); ents.push({ a: e.a, d: e.d, t, cl: /Se realiz[o\u00f3] el cierre|Cierre autom/i.test(t) }); } }); });
+  ents.sort((a, b) => a.d - b.d);
+  const auds = (d.auditorias || []).sort((a, b) => String(b['Fecha evaluaci\u00f3n']).localeCompare(String(a['Fecha evaluaci\u00f3n'])));
+  const au = auds[0]; let ev = {}; try { ev = au ? JSON.parse(au['Evidencia (detalle)']) : {}; } catch (e) { }
+  const ESTC = { Cumple: 'ok', Parcial: 'warn', 'No cumple': 'bad' };
+  openModal(`<div class="row"><h2 style="margin:0">Folio ${esc(folio)}</h2>${f ? clsPill(f.cls) : pill(r0.estatus)}${f && f.encuesta ? pill('Encuesta digital', 'info') : ''}${f && f.auto ? pill('Cierre autom\u00e1tico') : ''}${f && f.reasig ? tag('Reasignado', 'info') : ''}${f ? problemas(f).map(([t, k]) => tag(t, k)).join(' ') : ''}<span class="sp"></span><button class="btn" onclick="closeModal()">Cerrar</button></div>
+  <div class="grid g2" style="margin-top:12px"><dl class="kv">
+   <dt>Ejecutiva</dt><dd>${esc(r0.ejec)}</dd><dt>Cerr\u00f3</dt><dd>${esc(f?.closer || '\u2014')}</dd><dt>Sucursal</dt><dd>${esc(r0.sucursal)} \u00b7 ${esc(r0.zona)}</dd><dt>Medio</dt><dd>${esc(r0.medio)}</dd><dt>Paciente</dt><dd>${esc(r0.paciente)}</dd><dt>Reasignaciones</dt><dd>${esc([...new Set(rows.flatMap(r => (r.reasig || []).map(x => x.u)))].join(', ') || '\u2014')}</dd></dl>
+   <dl class="kv"><dt>Recepci\u00f3n</dt><dd>${fmtDT(f?.fReg)}</dd><dt>1er comentario</dt><dd>${f?.fApert != null ? fmtDT(f.fApert) + ' \u00b7 ' + fsTxt(f) : 'Sin comentario'} ${f ? slaPill(f.slaFs, apLbl()) : ''}</dd><dt>Cierre</dt><dd>${fmtDT(f?.fCierre)} \u00b7 ${fmtH(f?.hC)} ${f ? slaPill(slaMeta(f), metaLbl()) : ''}</dd>${f && (f.slaC7 === 'vencido' || f.slaC7 === 'fuera') && f.cv ? `<dt>Causa probable del vencimiento</dt><dd>${esc(f.cv)}<span class="obs">${esc(f.cvEvid || '')}</span></dd>` : ''}${f && f.reasig ? `<dt>Reasignaci\u00f3n</dt><dd><span class="obs">${esc(f.reasigDet)}</span></dd>` : ''}${f?.open ? `<dt>Transcurrido</dt><dd>${fmtH(f.elapsed)}</dd>` : ''}<dt>Impacto</dt><dd>${esc(r0.impacto)}</dd><dt>Cl\u00ednica / experto</dt><dd>${esc(f?.atClin || '\u2014')} / ${esc(f?.expTec || '\u2014')}</dd></dl></div>
+  ${au ? `<div class="glass card" style="margin-top:12px"><div class="row"><h3 style="margin:0">Auditor\u00eda \u00b7 ${esc(au['Calidad'])} \u00b7 puntaje ${au['Puntaje']}</h3><span class="sp"></span>${tag(au['Tipo de evaluaci\u00f3n'] + ' \u00b7 ' + au['Versi\u00f3n reglas'], 'info')}</div>
+   <div class="muted" style="margin:6px 0">Procedencia: <b>${esc(au['Procedencia'])}</b> \u00b7 Causa ra\u00edz: <b>${esc(au['Causa ra\u00edz'])}</b> (${esc(au['Fuente causa'])}) \u00b7 evaluado ${esc(au['Fecha evaluaci\u00f3n'])}</div>
+   <table class="plain crit"><thead><tr><th>Criterio</th><th>Resultado</th><th>Evidencia que lo sustenta</th></tr></thead><tbody>${CRIT.map(([id, lbl]) => { const v = au[ESTRUCT_AUD[id]]; return `<tr><td>${lbl}</td><td>${pill(v, ESTC[v] || 'n')}</td><td class="ev">${esc(ev[id] || '')}</td></tr>`; }).join('')}</tbody></table>
+   <div class="note"><b>Observaciones:</b> ${esc(au['Observaciones'])}<br><b>\u00c1rea de oportunidad:</b> ${esc(au['\u00c1rea de oportunidad'])}</div>
+   ${auds.length > 1 ? `<div class="note">Evaluaciones anteriores conservadas: ${auds.slice(1).map(a => esc(a['Fecha evaluaci\u00f3n'] + ' \u00b7 ' + a['Calidad'] + ' (' + a['Puntaje'] + ')')).join(' \u00b7 ')}</div>` : ''}</div>` : '<div class="banner info" style="margin-top:12px">Este folio no tiene auditor\u00eda: solo se auditan folios cerrados con gesti\u00f3n manual.</div>'}
+  <div class="glass card" style="margin-top:12px"><h3>Motivos (${rows.length})</h3>${table([{ l: '\u00c1rea', v: r => esc(r.area) }, { l: 'Subestudio', v: r => esc(r.subest || '\u2014') }, { l: 'Motivo', v: r => esc(r.motivo) }, { l: 'Clasificaci\u00f3n', v: r => esc(r.clasif || '\u2014') }, { l: 'Acciones correctivas', v: r => esc(r.acciones || '\u2014') }, { l: 'Causas', v: r => esc(r.causas || '\u2014') }], rows, { max: 260 })}<div class="note"><b>Comentario del paciente:</b> ${esc(r0.coment)}</div></div>
+  <div class="grid g2" style="margin-top:12px"><div class="glass card"><h3>Historial (${ents.length} gestiones)</h3><div class="tl">${ents.map(e => `<div class="e ${e.a === 'SISTEMAS API WEB SALUD DIGNA' ? 'sys' : ''} ${e.cl ? 'cl' : ''}"><div class="h"><b>${esc(e.a)}</b> \u00b7 ${fmtD(e.d)}</div><div class="x">${esc(e.t)}</div></div>`).join('') || '<span class="muted">Sin historial</span>'}</div></div>
+  <div class="glass card"><h3>Cambios entre cargas (${(d.cambios || []).length})</h3>${(d.cambios || []).length ? table([{ l: 'Fecha', v: c => esc(c['Fecha']) }, { l: 'Campo', v: c => esc(c['Campo']) }, { l: 'Antes', v: c => esc(c['Antes']) }, { l: 'Despu\u00e9s', v: c => esc(c['Despu\u00e9s']) }, { l: 'Archivo', v: c => esc(c['Archivo']) }], d.cambios, { max: 400 }) : '<span class="muted">Sin cambios registrados.</span>'}</div></div>`);
+}
+const ESTRUCT_AUD = { C1: 'C1 Claridad', C2: 'C2 Motivo', C3: 'C3 Investigaci\u00f3n', C4: 'C4 Seguimiento', C5: 'C5 Evidencia', C6: 'C6 Causa ra\u00edz', C7: 'C7 Justificaci\u00f3n', C8: 'C8 Tiempos', C9: 'C9 Cierre' };
+function openModal(h) { $('#modalBox').innerHTML = h; $('#modal').classList.add('on'); }
+function closeModal() { $('#modal').classList.remove('on'); }
+
+/* =====================================================================
+ *  VISTAS 3 \u2014 zonas, temporal, reporte gerencial, planes, bonos,
+ *  administraci\u00f3n, metodolog\u00eda, exportaciones e inicio
+ * ===================================================================== */
+/* Librer\u00edas pesadas: se descargan solo al exportar (Chart.js s\u00ed va en la p\u00e1gina). */
+const LIBS = {
+  xlsx: ['https:\/\/cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', () => window.XLSX],
+  jspdf: ['https:\/\/cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js', () => window.jspdf],
+  html2canvas: ['https:\/\/cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js', () => window.html2canvas],
+  jszip: ['https:\/\/cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', () => window.JSZip],
+};
+const _libs = {};
+function lib(n) {
+  if (LIBS[n][1]()) return Promise.resolve();
+  return _libs[n] || (_libs[n] = new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = LIBS[n][0]; sc.onload = () => res(); sc.onerror = () => { delete _libs[n]; rej(new Error('No se pudo descargar ' + n)); }; document.head.appendChild(sc); }));
+}
+const fname = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w]+/g, '_').replace(/^_|_$/g, '');
+async function xlsxDescarga(hojas, nombre) { try { await lib('xlsx'); } catch (e) { return toast(e.message); } const wb = XLSX.utils.book_new(); hojas.forEach(([n, rows]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), n.slice(0, 31))); XLSX.writeFile(wb, nombre); }
+
+/* ---------- Zona \u00b7 sucursal \u00b7 \u00e1rea ---------- */
+function groupStats(fs, keyFn, rowLevel) {
+  const g = new Map();
+  for (const f of fs) { const keys = rowLevel ? [...new Set(f.rows.map(rowLevel))] : [keyFn(f)]; for (const k of keys) { if (!k) continue; if (!g.has(k)) g.set(k, []); g.get(k).push(f); } }
+  return [...g].map(([k, arr]) => { const m = metrics(arr); let regs = 0, pr = 0, np = 0; for (const f of arr) for (const r of f.rows) if (!rowLevel || rowLevel(r) === k) { regs++; if (r.clasif === 'PROCEDE') pr++; else if (r.clasif === 'NO PROCEDE') np++; } return { k, n: arr.length, regs, pctProc: ratio(pr, pr + np), avgC: m.avgC, cumpT: m.cumpT, abiertos: m.abiertos, aud: m.aud.pA }; }).sort((a, b) => b.regs - a.regs);
+}
+function vZonas(el) {
+  const r = curRange(); const fs = cohort(r); const tab = S.sel.zt || 'sucursal';
+  const dims = { zona: ['Zona', f => f.zona], sucursal: ['Sucursal', f => f.sucursal], area: ['\u00c1rea', null, x => x.area], subest: ['Subestudio', null, x => x.subest], motivo: ['Motivo', null, x => x.motivo], medio: ['Medio de contacto', f => f.medio], impacto: ['Tipo de impacto', f => f.impacto] };
+  const [lbl, fk, rk] = dims[tab]; const gs = groupStats(fs, fk, rk);
+  const rec = new Map(); for (const f of fs) for (const x of f.rows) { const k = f.sucursal + '||' + x.motivo; if (!rec.has(k)) rec.set(k, { suc: f.sucursal, zona: f.zona, mot: x.motivo, area: x.area, n: 0, pr: 0, np: 0 }); const o = rec.get(k); o.n++; if (x.clasif === 'PROCEDE') o.pr++; else if (x.clasif === 'NO PROCEDE') o.np++; }
+  const recur = [...rec.values()].filter(o => o.n >= 3).sort((a, b) => b.n - a.n).slice(0, 60);
+  el.innerHTML = `${header('Zona \u00b7 sucursal \u00b7 \u00e1rea', `${esc(r.label)} \u00b7 ${fmtN(fs.length)} folios \u00b7 universo: ${UNI_LBL[S.flt.universo]}`)}
+  <div class="tabs">${Object.entries(dims).map(([k, d]) => `<button data-k="${k}" class="${k === tab ? 'on' : ''}">${d[0]}</button>`).join('')}</div>
+  <div class="grid g2"><div class="glass card"><h2>Top 15 \u00b7 ${lbl}</h2><div class="chart" style="height:400px">${chart('cZ', { type: 'bar', data: { labels: gs.slice(0, 15).map(g => g.k.length > 34 ? g.k.slice(0, 32) + '\u2026' : g.k), datasets: [{ label: 'Registros', data: gs.slice(0, 15).map(g => g.regs), backgroundColor: COL.pri, borderRadius: 4 }, { label: 'Procedentes (aprox.)', data: gs.slice(0, 15).map(g => Math.round((g.pctProc || 0) * g.regs)), backgroundColor: COL.bad, borderRadius: 4 }] }, options: { indexAxis: 'y', scales: { y: { ticks: { autoSkip: false } } } } })}</div></div>
+  <div class="glass card"><h2>Detalle (${gs.length})</h2>${table([{ l: lbl, v: g => esc(g.k) }, { l: 'Folios', n: 1, v: g => fmtN(g.n), s: g => g.n }, { l: 'Registros', n: 1, v: g => fmtN(g.regs), s: g => g.regs }, { l: '% procede', n: 1, v: g => fmtP(g.pctProc), s: g => g.pctProc ?? -1 }, { l: 'Prom. cierre', n: 1, v: g => fmtH(g.avgC), s: g => g.avgC ?? -1 }, { l: 'En tiempo', n: 1, v: g => fmtP(g.cumpT), s: g => g.cumpT ?? -1 }, { l: 'Abiertos', n: 1, v: g => fmtN(g.abiertos), s: g => g.abiertos }], gs, { click: tab === 'zona' ? g => { S.flt.zona = g.k; S.flt.suc = ''; saveFlt(); renderFilters(); S.sel.zt = 'sucursal'; render(); } : tab === 'sucursal' ? g => { S.flt.suc = g.k; saveFlt(); renderFilters(); S.sel.zt = 'motivo'; render(); } : null, max: 400 })}</div></div>
+  <div class="glass card" style="margin-top:16px"><h2>Problemas recurrentes (sucursal \u00d7 motivo, \u22653 registros)</h2>${table([{ l: 'Sucursal', v: o => esc(o.suc) }, { l: 'Zona', v: o => esc(o.zona) }, { l: '\u00c1rea', v: o => esc(o.area) }, { l: 'Motivo', v: o => esc(o.mot) }, { l: 'Registros', n: 1, v: o => fmtN(o.n), s: o => o.n }, { l: '% procede', n: 1, v: o => fmtP(ratio(o.pr, o.pr + o.np)), s: o => ratio(o.pr, o.pr + o.np) ?? -1 }], recur)}</div>`;
+  $$('#v-zonas .tabs button').forEach(b => b.onclick = () => { S.sel.zt = b.dataset.k; render(); });
+}
+
+/* ---------- An\u00e1lisis temporal ---------- */
+function vTemporal(el) {
+  const gran = S.sel.tg || 'semana'; const r = curRange();
+  const loaded = [...S.loaded].sort(); const a = Math.min(r.from, mesFrom(loaded[0])), b = r.to;
+  const ps = periodsBetween(S.flt.tipo === 'todo' ? a : r.from, b, gran === 'dia' ? 'semana' : gran);
+  const rows = ps.map(p => { const m = metrics(cohort(p)); return { p, m, cierres: closedIn(p).length }; });
+  el.innerHTML = `${header('An\u00e1lisis temporal', `Entradas por Fecha Registro \u00b7 cierres por Fecha Cierre \u00b7 ${esc(r.label)} (elige "Todo" para el hist\u00f3rico cargado)`)}
+  <div class="tabs">${['dia', 'semana', 'quincena', 'mes'].map(g => `<button data-g="${g}" class="${g === gran ? 'on' : ''}">${{ dia: 'D\u00eda', semana: 'Semana', quincena: 'Quincena', mes: 'Mes' }[g]}</button>`).join('')}</div>
+  ${gran === 'dia' ? `<div class="glass card"><h2>Entradas vs cierres por d\u00eda</h2><div class="chart" style="height:360px">${chart('cTd', dailyCfg(r))}</div></div>` : `
+  <div class="grid g2"><div class="glass card"><h2>Entradas y cierres</h2><div class="chart">${chart('cT1', { type: 'bar', data: { labels: ps.map(p => p.label), datasets: [{ label: 'Entradas', data: rows.map(x => x.m.n), backgroundColor: COL.pri, borderRadius: 4 }, { label: 'Cierres realizados', data: rows.map(x => x.cierres), backgroundColor: '#6AD2FF', borderRadius: 4 }] } })}</div></div>
+  <div class="glass card"><h2>Tendencia de indicadores</h2><div class="chart">${chart('cT2', { type: 'line', data: { labels: ps.map(p => p.label), datasets: [['% cierre', 'pctCierre'], ['Cumplimiento en tiempo', 'cumpT'], ['1er comentario \u226448 h', 'slaFs'], ['% procedencia', 'pctProc']].map(([l, k], i) => ({ label: l, data: rows.map(x => x.m[k] != null ? +(x.m[k] * 100).toFixed(1) : null), borderColor: PAL[i], tension: .3 })).concat([{ label: 'Gesti\u00f3n adecuada', data: rows.map(x => x.m.aud.pA != null ? +(x.m.aud.pA * 100).toFixed(1) : null), borderColor: PAL[4], tension: .3 }]) }, options: { scales: { y: pctAxis } } })}</div></div></div>
+  <div class="glass card" style="margin-top:16px"><h2>Comparativo por ${gran}</h2>${table([{ l: 'Periodo', v: x => esc(x.p.label), s: x => x.p.from }, { l: 'Folios', n: 1, v: x => fmtN(x.m.n), s: x => x.m.n }, { l: 'Cerrados', n: 1, v: x => fmtN(x.m.cerr), s: x => x.m.cerr }, { l: 'En tiempo', n: 1, v: x => fmtN(x.m.cerrEnT), s: x => x.m.cerrEnT }, { l: 'Fuera de tiempo', n: 1, v: x => fmtN(x.m.cerrFuera), s: x => x.m.cerrFuera }, { l: 'Abiertos vencidos', n: 1, v: x => fmtN(x.m.vencidos), s: x => x.m.vencidos }, { l: 'Cierres en periodo', n: 1, v: x => fmtN(x.cierres), s: x => x.cierres }, { l: '% cierre', n: 1, v: x => fmtP(x.m.pctCierre), s: x => x.m.pctCierre ?? -1 }, { l: '% en tiempo', n: 1, v: x => fmtP(x.m.cumpT), s: x => x.m.cumpT ?? -1 }, { l: '1er com. \u226448 h', n: 1, v: x => fmtP(x.m.slaFs), s: x => x.m.slaFs ?? -1 }, { l: 'Gesti\u00f3n adecuada', n: 1, v: x => fmtP(x.m.aud.pA), s: x => x.m.aud.pA ?? -1 }], rows)}</div>`}`;
+  $$('#v-temporal .tabs button').forEach(b => b.onclick = () => { S.sel.tg = b.dataset.g; render(); });
+}
+
+/* ---------- Reporte gerencial ---------- */
+function buildReport() {
+  const r = curRange(), p = prevPeriod(r);
+  const m = metrics(cohort(r)), q = metricsPrev(p);
+  const ex = execStats(r).filter(x => x.score != null).sort((a, b) => b.score - a.score);
+  const al = computeAlerts(r, p); const crit = al.filter(a => a.lvl === 'critica');
+  const sucs = groupStats(cohort(r), f => f.sucursal).slice(0, 10);
+  const causas = countBy(cohort(r).filter(f => f.aud && f.aud.causa !== 'No determinable'), f => f.aud.causa).slice(0, 6);
+  const coords = S.ses.coordinadores.map(c => ({ c, m: metrics(cohort(r).filter(f => c.ejecutivas.includes(f.owner) && !f.auto)) }));
+  const dir = (a, b, pp = true, inv = false) => { if (a == null || b == null) return 'sin comparativo disponible'; const d = pp ? (a - b) * 100 : a - b; if (Math.abs(d) < .05) return 'sin cambio'; return `${d > 0 ? 'aument\u00f3' : 'disminuy\u00f3'} ${pp ? Math.abs(d).toFixed(1) + ' pp' : fmtH(Math.abs(d))} (${(inv ? d < 0 : d > 0) ? 'mejora' : 'deterioro'})`; };
+  const errs = CRIT.map((c, i) => [ERROR_LBL[c[0]], ratio(m.aud.crit[i], m.aud.n), c[0]]).filter(x => x[1] >= 0.15).sort((a, b) => b[1] - a[1]);
+  const rec = [];
+  const cnt = countBy(crit, a => a.ejec); if (cnt.length) rec.push(`Acompa\u00f1amiento individual, priorizando a quienes acumulan m\u00e1s alertas cr\u00edticas: ${cnt.slice(0, 5).map(([e, n]) => `${e} (${n})`).join(', ')}.`);
+  if (m.vencidos) rec.push(`Depurar ${fmtN(m.vencidos)} folios que siguen vencidos (${metaLbl()}).`);
+  if (m.fsVen) rec.push(`Contactar de inmediato ${fmtN(m.fsVen)} folios sin primer comentario con m\u00e1s de 48 h.`);
+  errs.slice(0, 3).forEach(([l, p, id]) => rec.push(`${l} en ${fmtP(p, 0)} de los folios auditados: ${RECOM[id]}`));
+  return { r, p, m, q, ex, al, crit, sucs, causas, coords, dir, errs, rec };
+}
+function vReporte(el) {
+  const R = buildReport(), { r, p, m, q } = R;
+  el.innerHTML = `${header('Reporte gerencial', `${esc(r.label)} \u00b7 comparativo ${esc(p.label)}`, `<button class="btn" onclick="printReport()">Descargar PDF</button><button class="btn pri" onclick="exportReportXlsx()">Descargar Excel</button>`)}
+  <div class="rep glass" id="report">
+  <h1>Reporte de desempe\u00f1o \u00b7 Recuperaci\u00f3n de Pacientes</h1><div class="muted">Periodo <b>${esc(r.label)}</b> \u00b7 comparativo ${esc(p.label)} \u00b7 ${S.ses.rol === 'ADMIN' && !S.flt.coord ? 'todos los equipos' : 'equipo ' + esc(coordNombre(S.flt.coord || S.ses.correo))} \u00b7 generado ${fmtDT(nowNaive())}</div>
+  <h2>1. Resultados generales</h2><p>Se registraron <b>${fmtN(m.n)} folios</b> (${fmtN(m.regs)} motivos). Se cerraron <b>${fmtN(m.cerr)}</b> (${fmtP(m.pctCierre)} de ${fmtN(m.eleg)} elegibles): <b>${fmtN(m.cerrEnT)} en tiempo</b> y ${fmtN(m.cerrFuera)} fuera de tiempo (meta ${metaLbl()}). Siguen vencidos ${fmtN(m.vencidos)} y ${fmtN(m.pendPlazo)} est\u00e1n abiertos dentro de plazo. Respecto al periodo anterior, el % de cierre ${R.dir(m.pctCierre, q.pctCierre)} y el cumplimiento en tiempo ${R.dir(m.cumpT, q.cumpT)}.</p>
+  <p>Calidad: de ${fmtN(m.aud.n)} folios cerrados auditados, ${fmtP(m.aud.pA)} tuvo gesti\u00f3n adecuada, ${fmtP(m.aud.pP)} parcialmente adecuada y ${fmtP((m.aud.I + m.aud.N) / (m.aud.n || 1))} inadecuada o sin informaci\u00f3n suficiente.</p>
+  <h2>2. Indicadores clave</h2><table><thead><tr><th>Indicador</th><th class="n">Actual</th><th class="n">Anterior</th></tr></thead><tbody>${repKpis(R).map(k => `<tr><td>${k[0]}</td><td class="n">${k[1]}</td><td class="n">${k[2]}</td></tr>`).join('')}</tbody></table>
+  ${R.coords.length > 1 ? `<h2>3. Comparativo de equipos</h2><table><thead><tr><th>Coordinador</th><th class="n">Folios</th><th class="n">% cierre</th><th class="n">En tiempo</th><th class="n">Vencidos</th><th class="n">Gesti\u00f3n adecuada</th></tr></thead><tbody>${R.coords.map(x => `<tr><td>${esc(x.c.nombre)}</td><td class="n">${fmtN(x.m.n)}</td><td class="n">${fmtP(x.m.pctCierre)}</td><td class="n">${fmtP(x.m.cumpT)}</td><td class="n">${fmtN(x.m.vencidos)}</td><td class="n">${fmtP(x.m.aud.pA)}</td></tr>`).join('')}</tbody></table>` : ''}
+  <h2>4. Ranking de ejecutivas</h2>${R.ex.length ? `<table><thead><tr><th>#</th><th>Ejecutiva</th><th class="n">Desempe\u00f1o</th><th class="n">Cerrados</th><th class="n">En tiempo</th><th class="n">Vencidos</th><th class="n">% cumplimiento</th><th class="n">Gesti\u00f3n adecuada</th></tr></thead><tbody>${R.ex.map((x, i) => `<tr><td>${i + 1}</td><td>${esc(x.ejec)}</td><td class="n">${fmt1(x.score)}</td><td class="n">${fmtN(x.cerr)}</td><td class="n">${fmtN(x.cerrEnT)}</td><td class="n">${fmtN(x.vencidos)}</td><td class="n">${fmtP(x.cumpT)}</td><td class="n">${fmtP(x.aud.pA)}</td></tr>`).join('')}</tbody></table>` : '<p>Sin ejecutivas con informaci\u00f3n suficiente.</p>'}
+  <h2>5. Principales alertas</h2>${R.crit.length ? `<ul>${R.crit.slice(0, 15).map(a => `<li><b>${esc(a.ejec)}</b> \u2014 ${esc(a.ind)}: ${esc(a.dato)}.</li>`).join('')}</ul>` : '<p>Sin alertas cr\u00edticas.</p>'}
+  <h2>6. Errores de gesti\u00f3n m\u00e1s frecuentes</h2>${R.errs.length ? `<ul>${R.errs.map(([l, p]) => `<li>${esc(l)}: ${fmtP(p, 0)} de los folios auditados.</li>`).join('')}</ul>` : '<p>Sin errores recurrentes por encima del 15%.</p>'}
+  <h2>7. Causas ra\u00edz principales</h2>${R.causas.length ? `<ul>${R.causas.map(([c, n]) => `<li>${esc(c)}: ${n} folios.</li>`).join('')}</ul>` : '<p>Sin causas identificadas.</p>'}
+  <h2>8. Sucursales con m\u00e1s inconformidades</h2><table><thead><tr><th>Sucursal</th><th class="n">Folios</th><th class="n">% procede</th><th class="n">Prom. cierre</th></tr></thead><tbody>${R.sucs.map(g => `<tr><td>${esc(g.k)}</td><td class="n">${fmtN(g.n)}</td><td class="n">${fmtP(g.pctProc)}</td><td class="n">${fmtH(g.avgC)}</td></tr>`).join('')}</tbody></table>
+  <h2>9. Recomendaciones y acciones prioritarias</h2>${R.rec.length ? `<ol>${R.rec.map(x => `<li>${esc(x)}</li>`).join('')}</ol>` : '<p>Sin acciones prioritarias.</p>'}
+  <p class="note">Fuente: Google Sheets (actualizado ${esc(S.ses.ultimaActualizacion || '\u2014')}). Auditor\u00eda autom\u00e1tica por reglas (sin IA). Metodolog\u00eda completa en el m\u00f3dulo Metodolog\u00eda.</p></div>`;
+}
+function repKpis(R) {
+  const { m, q } = R;
+  return [['Folios \u00fanicos', fmtN(m.n), fmtN(q.n)], ['Cerrados', fmtN(m.cerr), fmtN(q.cerr)], ['Cerrados en tiempo (' + metaLbl() + ')', fmtN(m.cerrEnT), fmtN(q.cerrEnT)], ['Cerrados fuera de tiempo', fmtN(m.cerrFuera), fmtN(q.cerrFuera)], ['Abiertos vencidos', fmtN(m.vencidos), fmtN(q.vencidos)], ['% de cierre', fmtP(m.pctCierre), fmtP(q.pctCierre)], ['% cumplimiento en tiempo', fmtP(m.cumpT), fmtP(q.cumpT)], ['1er comentario \u226448 h', fmtP(m.slaFs), fmtP(q.slaFs)], ['Cierre \u2264' + S.cfg.slaCH + ' h', fmtP(m.slaC), fmtP(q.slaC)], ['Cierre \u2264' + S.cfg.cierreDias + ' d\u00edas', fmtP(m.slaC7), fmtP(q.slaC7)], ['% procedencia', fmtP(m.pctProc), fmtP(q.pctProc)], ['Gesti\u00f3n adecuada', fmtP(m.aud.pA), fmtP(q.aud.pA)], ['Prom. cierre', fmtH(m.avgC), fmtH(q.avgC)]];
+}
+function printReport() { document.body.classList.add('printing-report'); setTimeout(() => { window.print(); document.body.classList.remove('printing-report'); }, 80); }
+function exportReportXlsx() {
+  const R = buildReport();
+  xlsxDescarga([['Resumen', [['Reporte \u00b7 ' + R.r.label], [], ['Indicador', 'Actual', 'Anterior'], ...repKpis(R)]], ['Ranking', [['#', 'Ejecutiva', 'Desempe\u00f1o', 'Cerrados', 'En tiempo', 'Vencidos', '% cumplimiento', '% cierre', 'Gesti\u00f3n adecuada'], ...R.ex.map((x, i) => [i + 1, x.ejec, x.score, x.cerr, x.cerrEnT, x.vencidos, x.cumpT, x.pctCierre, x.aud.pA])]], ['Equipos', [['Coordinador', 'Folios', '% cierre', 'En tiempo', 'Vencidos', 'Gesti\u00f3n adecuada'], ...R.coords.map(x => [x.c.nombre, x.m.n, x.m.pctCierre, x.m.cumpT, x.m.vencidos, x.m.aud.pA])]], ['Alertas', [['Nivel', 'Tipo', 'Ejecutiva', 'Indicador', 'Dato', 'Acci\u00f3n'], ...R.al.map(a => [a.lvl, a.tipo, a.ejec, a.ind, a.dato, a.rec])]], ['Recomendaciones', [['Recomendaci\u00f3n'], ...R.rec.map(x => [x])]]], `Reporte_${fname(R.r.label)}.xlsx`);
+}
+
+/* ---------- Planes de acci\u00f3n (hoja Planes) ---------- */
+async function cargarPlanes(force) { if (!S.plans || force) S.plans = await call('apiPlanes'); return S.plans; }
+function planEval(p) {
+  const d0 = parseIsoD(p['Fecha compromiso']); if (!d0) return null; const d1 = Math.min(parseIsoD(p['Fecha seguimiento']) ?? nowNaive(), nowNaive());
+  const sel = (a, b) => S.folios.filter(f => !f.auto && f.owner === p['Ejecutiva'] && f.fReg >= a && f.fReg < b);
+  return { before: metrics(sel(d0 - 30 * D, d0)), after: metrics(sel(d0, d1 + D)) };
+}
+function newPlan(ejec = '', area = '') { S.sel.plan = { 'Ejecutiva': ejec, '\u00c1rea de oportunidad': area, 'Fecha compromiso': isoD(dayStart(nowNaive())), 'Estatus': 'Abierto' }; go('planes'); }
+async function vPlanes(el) {
+  const planes = await cargarPlanes(); const e = S.sel.plan; const t = team();
+  const fld = (k, l, type = 'text', full) => `<label class="${full ? 'full' : ''}">${l}${type === 'area' ? `<textarea data-p="${k}">${esc(e?.[k] || '')}</textarea>` : `<input type="${type}" data-p="${k}" value="${esc(String(e?.[k] || '').slice(0, type === 'date' ? 10 : 999))}">`}</label>`;
+  const dd = (a, b, pp, inv) => { if (a == null || b == null) return '\u2014'; const d = pp ? (b - a) * 100 : b - a; return `<span class="${Math.abs(d) < .05 ? 'flat' : (inv ? d < 0 : d > 0) ? 'up' : 'down'}">${pp ? fmtP(a) + ' \u2192 ' + fmtP(b) : fmtH(a) + ' \u2192 ' + fmtH(b)}</span>`; };
+  el.innerHTML = `${header('Planes de acci\u00f3n', 'Se guardan en la hoja Planes \u00b7 compara 30 d\u00edas antes vs despu\u00e9s del compromiso', '<button class="btn pri" onclick="newPlan()">Nuevo plan</button>')}
+  ${e ? `<div class="glass card" style="margin-bottom:16px"><h2>${e['ID'] ? 'Editar plan #' + e['ID'] : 'Nuevo plan'}</h2><div class="form">
+   <label>Ejecutiva<select data-p="Ejecutiva"><option value="">\u2014</option>${t.map(x => `<option ${x === e['Ejecutiva'] ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+   ${fld('\u00c1rea de oportunidad', '\u00c1rea de oportunidad')}${fld('Fecha compromiso', 'Fecha del compromiso', 'date')}${fld('Fecha seguimiento', 'Fecha de seguimiento', 'date')}${fld('Responsable', 'Responsable')}
+   <label>Estatus<select data-p="Estatus">${['Abierto', 'En seguimiento', 'Cumplido', 'No cumplido'].map(x => `<option ${x === e['Estatus'] ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+   ${fld('Compromiso', 'Compromiso establecido', 'area', 1)}${fld('Acci\u00f3n correctiva', 'Acci\u00f3n correctiva', 'area', 1)}${fld('Resultado', 'Resultado obtenido', 'area', 1)}</div>
+   <div class="row" style="margin-top:12px"><button class="btn pri" id="pSave">Guardar</button><button class="btn" id="pCancel">Cancelar</button>${e['ID'] ? '<span class="sp"></span><button class="btn bad" id="pDel">Eliminar</button>' : ''}</div></div>` : ''}
+  <div class="glass card">${table([{ l: '#', n: 1, v: p => p['ID'], s: p => p['ID'] }, { l: 'Ejecutiva', v: p => `<b>${esc(p['Ejecutiva'])}</b>` }, { l: '\u00c1rea de oportunidad', v: p => esc(p['\u00c1rea de oportunidad']) }, { l: 'Compromiso', v: p => esc(p['Compromiso']) }, { l: 'Fecha', v: p => esc(String(p['Fecha compromiso']).slice(0, 10)) }, { l: 'Estatus', v: p => pill(p['Estatus'], { Cumplido: 'ok', 'No cumplido': 'bad', Abierto: 'warn' }[p['Estatus']] || 'info') }, { l: '% cierre antes \u2192 despu\u00e9s', v: p => { const x = planEval(p); return x ? dd(x.before.pctCierre, x.after.pctCierre, 1) : '\u2014'; } }, { l: 'En tiempo', v: p => { const x = planEval(p); return x ? dd(x.before.cumpT, x.after.cumpT, 1) : '\u2014'; } }, { l: 'Gesti\u00f3n adecuada', v: p => { const x = planEval(p); return x ? dd(x.before.aud.pA, x.after.aud.pA, 1) : '\u2014'; } }, { l: 'n antes/despu\u00e9s', v: p => { const x = planEval(p); return x ? `${x.before.n} / ${x.after.n}` : '\u2014'; } }], [...planes].sort((a, b) => b['ID'] - a['ID']), { click: p => { S.sel.plan = { ...p }; render(); } })}
+  <div class="note">La comparaci\u00f3n usa los meses cargados en el dashboard; si un plan es antiguo, selecciona ese periodo para cargar sus meses.</div></div>`;
+  if (e) {
+    $('#pCancel').onclick = () => { S.sel.plan = null; render(); };
+    $('#pSave').onclick = async () => { const o = { ...e }; $$('#v-planes [data-p]').forEach(i => o[i.dataset.p] = i.value); if (!o['Ejecutiva'] || !o['Fecha compromiso']) return toast('Ejecutiva y fecha son obligatorias'); try { await call('apiGuardarPlan', { id: o['ID'], ejecutiva: o['Ejecutiva'], area: o['\u00c1rea de oportunidad'], fecha: o['Fecha compromiso'], fechaSeg: o['Fecha seguimiento'], responsable: o['Responsable'], estatus: o['Estatus'], compromiso: o['Compromiso'], accion: o['Acci\u00f3n correctiva'], resultado: o['Resultado'] }); S.sel.plan = null; await cargarPlanes(true); toast('Plan guardado'); render(); } catch (err) { toast('Error: ' + err.message); } };
+    if (e['ID']) $('#pDel').onclick = async () => { if (!confirm('\u00bfEliminar este plan?')) return; await call('apiEliminarPlan', e['ID']); S.sel.plan = null; await cargarPlanes(true); render(); };
+  }
+}
+
+/* ---------- Bonos ---------- */
+function ultimoMesCerrado() { const d = dt(nowNaive()); return mesKey(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - 1); }
+function rangoMes(k) { const from = mesFrom(k); const d = dt(from); return { key: k, label: mesLabel(k), from, to: Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) - 1, tipo: 'mes' }; }
+const metaTxt = (i, meta) => i.op === 'check' ? 'Cumple' : (i.op === '>=' ? '\u2265' : '\u2264') + meta + '%';
+function pagoLabel(m) { return periodOf(m.to + 1, 'quincena').label; }
+function tipoBono(total) { const n = S.ses.bono.niveles; return total >= n.A ? 'A' : total >= n.B ? 'B' : 'No aplica'; }
+function tipoPill(t) { return t === 'A' ? '<span class="pill tag p-ok big">Bono A</span>' : t === 'B' ? '<span class="pill tag p-info big">Bono B</span>' : '<span class="pill tag p-n big">No aplica</span>'; }
+const captCache = {};
+async function captura(mes, force) { if (!captCache[mes] || force) { const r = await call('apiBonos', mes); captCache[mes] = {}; r.captura.forEach(x => captCache[mes][x['Ejecutiva']] = { mon: x['Monitoreo %'], aud: x['Auditor\u00eda %'], sat: String(x['Satisfacci\u00f3n (SI/NO)']).toUpperCase() === 'SI' }); } return captCache[mes]; }
+function bonoIndicadores(e, r) {
+  const bc = S.ses.bono; const el = S.folios.filter(f => f.owner === e && !f.auto && uniOk(f, S.flt.universo) && inR(f.fReg, r) && f.cls !== 'cancelado');
+  let aOk = 0, aDen = 0, sdN = 0, sdDen = 0, cOk = 0, cDen = 0; const lim = bc.cierreDias * 24; const now = S.cfg.corte === 'archivo' ? S.cutoffMs : nowNaive();
+  for (const f of el) {
+    if (f.slaFs === 'cumple') { aOk++; aDen++; } else if (f.slaFs === 'fuera' || f.slaFs === 'vencido') aDen++;
+    if (f.cls === 'cerrado') for (const x of f.rows) { sdDen++; if (!x.clasif || x.clasif === 'SIN DEFINIR') sdN++; }
+    const st = bc.cierreDesde === 'comentario' && f.fAp != null ? f.fAp : f.fReg;
+    if (f.cls === 'cerrado' && f.fCierre != null) { cDen++; if ((f.fCierre - st) / H <= lim) cOk++; } else if (f.open && (now - st) / H > lim) cDen++;
+  }
+  return { n: el.length, ape: ratio(aOk, aDen), sd: ratio(sdN, sdDen), cie: ratio(cOk, cDen) };
+}
+function bonoEval(e, r, capt) {
+  const bc = S.ses.bono; const v = bonoIndicadores(e, r); const c = (capt || {})[e] || {};
+  const num = x => x === '' || x == null ? null : +x / 100;
+  const vals = { mon: num(c.mon), aud: num(c.aud), ape: v.ape, sd: v.sd, cie: v.cie, sat: c.sat ? 1 : 0 };
+  const det = bc.ind.map(i => { const p = i[bc.esquema]; const val = vals[i.id] ?? null; const ok = val == null ? null : i.op === 'check' ? val === 1 : i.op === '>=' ? val * 100 >= p.meta - 1e-9 : val * 100 <= p.meta + 1e-9; return { ...i, meta: p.meta, pts: p.pts, val, ok, ganados: ok ? p.pts : 0 }; });
+  const total = det.reduce((s, d) => s + d.ganados, 0), maxPts = det.reduce((s, d) => s + d.pts, 0);
+  return { e, v, det, total, maxPts, incompleto: det.some(d => d.val == null && d.fuente === 'manual'), insuf: v.n < S.cfg.minFolios };
+}
+function bonoCell(d) { if (d.op === 'check') return d.ok ? `<b>Cumple</b> ${pill(d.pts + '%', 'ok')}` : `<b>No cumple</b> ${pill('0%', 'bad')}`; if (d.val == null) return pill(d.fuente === 'manual' ? 'Sin captura' : 'Sin datos'); return `<b>${fmtP(d.val)}</b> ${d.ok ? pill(d.pts + '%', 'ok') : pill('0%', 'bad')}`; }
+function bonoMonth(r) { if (!r || r.tipo === 'todo' || r.tipo === 'rango') return rangoMes(ultimoMesCerrado()); return rangoMes(mesKey(r.from)); }
+function bonoFichaHtml(e, r) {
+  const m = bonoMonth(r); const capt = captCache[m.key];
+  if (!capt) { captura(m.key).then(() => { if (S.view === 'individual') render(); }).catch(() => { }); return `<div class="glass card muted" style="margin-bottom:16px">Cargando bono de ${esc(m.label)}\u2026</div>`; }
+  if (!S.loaded.has(m.key)) return `<div class="glass card muted" style="margin-bottom:16px">El bono de ${esc(m.label)} requiere cargar ese mes; selecci\u00f3nalo en Periodo.</div>`;
+  const x = bonoEval(e, m, capt); const t = tipoBono(x.total); const n = S.ses.bono.niveles;
+  return `<div class="glass card bono b-${t === 'A' ? 'a' : t === 'B' ? 'b' : 'n'}" style="margin-bottom:16px"><div class="row"><div><h2 style="margin:0">Bono mensual \u00b7 ${esc(m.label)}</h2><div class="muted small">Esquema ${S.ses.bono.esquema} \u00b7 mes vencido, se deposita en la ${esc(pagoLabel(m))} \u00b7 Bono A \u2265${n.A}% \u00b7 Bono B ${n.B}\u2013${n.A - 1}%</div></div><span class="sp"></span>${tipoPill(t)}<b class="score">${x.total}%</b><span class="muted">de ${x.maxPts}%</span></div>
+  ${nowNaive() <= m.to ? '<div class="banner warn">Mes en curso: resultado preliminar.</div>' : ''}${x.incompleto ? '<div class="banner warn">Falta capturar monitoreo y/o auditor\u00eda del mes (m\u00f3dulo Bonos).</div>' : ''}
+  <table class="plain"><thead><tr><th>Indicador</th><th class="n">Meta</th><th class="n">Resultado del mes</th><th class="n">Puntos</th></tr></thead><tbody>${x.det.map(d => `<tr><td>${esc(d.nombre)}</td><td class="n">${metaTxt(d, d.meta)}</td><td class="n">${bonoCell(d)}</td><td class="n">${d.ganados}%</td></tr>`).join('')}</tbody></table></div>`;
+}
+async function vBonos(el) {
+  const bc = S.ses.bono; const months = [...S.ses.meses].reverse(); const lc = ultimoMesCerrado();
+  const selK = S.sel.bMes || (months.includes(lc) ? lc : months[0]); S.sel.bMes = selK;
+  await asegurarMeses([selK]);
+  const r = rangoMes(selK); const capt = await captura(selK); const sch = bc.esquema; const admin = S.ses.rol === 'ADMIN';
+  const list = team().filter(e => S.folios.some(f => f.owner === e && inR(f.fReg, r)));
+  const res = list.map(e => bonoEval(e, r, capt));
+  el.innerHTML = `${header('Asignaci\u00f3n de bonos', `Mes evaluado <b>${esc(r.label)}</b> \u00b7 dep\u00f3sito ${esc(pagoLabel(r))} \u00b7 esquema ${sch === 'vigente' ? 'puntaje vigente' : 'propuesta'} \u00b7 Bono A \u2265${bc.niveles.A}% \u00b7 Bono B ${bc.niveles.B}\u2013${bc.niveles.A - 1}%`, `<label class="inline">Mes <select id="bMes">${months.map(m => `<option value="${m}" ${m === selK ? 'selected' : ''}>${mesLabel(m)}${m === lc ? ' (mes vencido)' : ''}</option>`).join('')}</select></label><button class="btn" id="bXls">Exportar Excel</button>`)}
+  <div class="kpis">${kpi('Ejecutivas', fmtN(res.length))}${kpi('Bono A', fmtN(res.filter(x => tipoBono(x.total) === 'A').length), '', 'ok')}${kpi('Bono B', fmtN(res.filter(x => tipoBono(x.total) === 'B').length), '', 'info')}${kpi('No aplica', fmtN(res.filter(x => tipoBono(x.total) === 'No aplica').length), '', 'bad')}${kpi('Capturas pendientes', fmtN(res.filter(x => x.incompleto).length), 'monitoreo o auditor\u00eda', res.some(x => x.incompleto) ? 'warn' : 'ok')}</div>
+  <div class="glass card" style="margin-bottom:16px"><h2>Resultado por ejecutiva</h2>${table([{ l: 'Ejecutiva', v: x => `<b>${esc(x.e)}</b>${x.insuf ? '<br>' + tag('Pocos folios (' + x.v.n + ')', 'warn') : ''}` }, ...bc.ind.map((i, k) => ({ l: `${k + 1}. ${esc(i.nombre.replace('% de ', ''))}<br><span class="muted">${metaTxt(i, i[sch].meta)} \u00b7 ${i[sch].pts} pts</span>`, v: x => bonoCell(x.det[k]), s: x => x.det[k].val ?? -1 })), { l: 'Tipo de bono', v: x => tipoPill(tipoBono(x.total)), s: x => x.total }, { l: 'Puntos', n: 1, v: x => `<b>${x.total}%</b> <span class="muted">de ${x.maxPts}%</span>`, s: x => x.total }], res, { click: x => go('individual', { ejec: x.e }), max: 700 })}</div>
+  <div class="grid g2"><div class="glass card"><h2>Captura manual \u00b7 ${esc(r.label)}</h2><div class="note">Se guarda en la hoja Bonos_Captura. Cada coordinador solo puede capturar a su equipo.</div>
+   <div class="tw" style="max-height:520px"><table><thead><tr><th>Ejecutiva</th><th class="n">% monitoreo</th><th class="n">% auditor\u00eda</th><th>Satisfacci\u00f3n</th></tr></thead><tbody>${list.map(e => `<tr><td>${esc(e)}</td><td class="n"><input type="number" min="0" max="100" step="0.1" class="num" data-bc="mon" data-e="${esc(e)}" value="${capt[e]?.mon ?? ''}"></td><td class="n"><input type="number" min="0" max="100" step="0.1" class="num" data-bc="aud" data-e="${esc(e)}" value="${capt[e]?.aud ?? ''}"></td><td style="text-align:center"><input type="checkbox" class="chk" data-sat="${esc(e)}" ${capt[e]?.sat ? 'checked' : ''}></td></tr>`).join('')}</tbody></table></div>
+   <div class="row" style="margin-top:10px"><button class="btn pri" id="bSave">Guardar captura</button></div></div>
+  <div class="glass card"><h2>Criterios del bono</h2>${admin ? '' : '<div class="note">Solo el administrador modifica los criterios.</div>'}
+   <div class="tw"><table><thead><tr><th>Indicador</th><th class="n">Meta vig.</th><th class="n">Pts vig.</th><th class="n">Meta prop.</th><th class="n">Pts prop.</th></tr></thead><tbody>${bc.ind.map((i, k) => `<tr><td><b>${esc(i.nombre)}</b><br><span class="muted small">${esc(i.criterio)}</span></td>${['vigente', 'propuesta'].map(s => `<td class="n">${i.op === 'check' ? 'Cumple' : `<input type="number" step="0.1" class="num sm" data-crit="${k}|${s}|meta" value="${i[s].meta ?? ''}" ${admin ? '' : 'disabled'}>`}</td><td class="n"><input type="number" step="0.1" class="num sm" data-crit="${k}|${s}|pts" value="${i[s].pts}" ${admin ? '' : 'disabled'}></td>`).join('')}</tr>`).join('')}
+   <tr class="tot"><td>Total de puntos</td><td></td><td class="n">${bc.ind.reduce((s, i) => s + i.vigente.pts, 0)}%</td><td></td><td class="n">${bc.ind.reduce((s, i) => s + i.propuesta.pts, 0)}%</td></tr></tbody></table></div>
+   ${admin ? `<div class="form" style="margin-top:10px"><label>Esquema<select id="bSch"><option value="vigente" ${sch === 'vigente' ? 'selected' : ''}>Vigente</option><option value="propuesta" ${sch === 'propuesta' ? 'selected' : ''}>Propuesta</option></select></label><label>Bono A desde %<input type="number" id="bA" value="${bc.niveles.A}"></label><label>Bono B desde %<input type="number" id="bB" value="${bc.niveles.B}"></label><label>D\u00edas para cierre<input type="number" id="bDias" value="${bc.cierreDias}"></label><label>Cierre se cuenta desde<select id="bDesde"><option value="registro" ${bc.cierreDesde === 'registro' ? 'selected' : ''}>Fecha Registro</option><option value="comentario" ${bc.cierreDesde === 'comentario' ? 'selected' : ''}>Primer comentario</option></select></label></div><div class="row" style="margin-top:10px"><button class="btn pri" id="bCrit">Guardar criterios</button></div>` : ''}</div></div>`;
+  $('#bMes').onchange = ev => { S.sel.bMes = ev.target.value; render(); };
+  $('#bSave').onclick = async () => { const lista = list.map(e => ({ ejecutiva: e, mon: $(`[data-bc="mon"][data-e="${CSS.escape(e)}"]`).value, aud: $(`[data-bc="aud"][data-e="${CSS.escape(e)}"]`).value, sat: $(`[data-sat="${CSS.escape(e)}"]`).checked })); try { overlay('Guardando\u2026'); await call('apiGuardarBonoCaptura', selK, lista); await captura(selK, true); toast('Captura guardada'); } catch (err) { toast('Error: ' + err.message); } finally { overlay(null); } render(); };
+  if (admin) $('#bCrit').onclick = async () => { const nb = JSON.parse(JSON.stringify(bc)); $$('#v-bonos [data-crit]').forEach(i => { const [k, s, f] = i.dataset.crit.split('|'); nb.ind[+k][s][f] = i.value === '' ? null : +i.value; }); nb.esquema = $('#bSch').value; nb.niveles = { A: +$('#bA').value, B: +$('#bB').value }; nb.cierreDias = +$('#bDias').value; nb.cierreDesde = $('#bDesde').value; try { await call('apiGuardarBonoCriterios', nb); S.ses.bono = nb; toast('Criterios guardados'); render(); } catch (err) { toast('Error: ' + err.message); } };
+  $('#bXls').onclick = () => { const head = ['Ejecutiva', 'Folios', ...bc.ind.flatMap(i => [i.nombre, 'Meta ' + metaTxt(i, i[sch].meta), 'Cumple', 'Puntos']), 'Puntos totales', 'M\u00e1ximo', 'Tipo de bono', 'Observaciones']; xlsxDescarga([['Bonos', [['Bonos \u00b7 ' + r.label + ' \u00b7 dep\u00f3sito ' + pagoLabel(r)], [], head, ...res.map(x => [x.e, x.v.n, ...x.det.flatMap(d => [d.op === 'check' ? (d.ok ? 'Cumple' : 'No cumple') : d.val == null ? null : +(d.val * 100).toFixed(1), d.meta, d.val == null ? 'Sin dato' : d.ok ? 'SI' : 'NO', d.ganados]), x.total, x.maxPts, tipoBono(x.total), [x.incompleto ? 'Captura incompleta' : '', x.insuf ? 'Pocos folios' : ''].filter(Boolean).join('; ')])]]], `Bonos_${fname(r.label)}.xlsx`); };
+}
+
+/* ---------- Administraci\u00f3n (solo ADMIN; edici\u00f3n en Google Sheets) ---------- */
+async function vAdmin(el) {
+  if (S.ses.rol !== 'ADMIN') { el.innerHTML = '<div class="glass empty"><b>Solo administradores</b></div>'; return; }
+  const a = await call('apiAdmin'); const c = S.cfg.raw;
+  const cfgCampos = [['TIEMPO_RANKING', 'Meta de tiempo para ranking y auditor\u00eda', ['48H', '7D']], ['SLA_1ER_H', 'Horas al primer comentario'], ['SLA_CIERRE_H', 'Meta de cierre (horas)'], ['CIERRE_DIAS', 'Meta de cierre (d\u00edas)'], ['INICIO_CIERRE', 'Cierre medido desde', ['registro', 'apertura']], ['PESO_PROD', 'Peso productividad %'], ['PESO_RES', 'Peso resoluci\u00f3n %'], ['PESO_OPO', 'Peso oportunidad %'], ['PROD_VOL', 'Productividad: % por volumen en tiempo'], ['MIN_FOLIOS', 'Folios m\u00ednimos para calificar'], ['TERMINO_COMO', 'Estatus TERMINO', ['abierto', 'cerrado']], ['MADUREZ_DIAS', 'D\u00edas de madurez'], ['CORTE', 'Abiertos medidos hasta', ['hoy', 'archivo']], ['AUD_ADECUADA', 'Auditor\u00eda: puntaje para adecuada (0\u20131)'], ['AUD_PARCIAL', 'Auditor\u00eda: puntaje para parcial (0\u20131)'], ['AUD_PATRON_PCT', 'Patr\u00f3n: % de folios con mismo error'], ['AUD_PATRON_MIN', 'Patr\u00f3n: folios auditados m\u00ednimos'], ['MESES_INICIALES', 'Meses que carga al abrir']];
+  el.innerHTML = `${header('Usuarios, equipos y datos', 'Los usuarios y equipos se editan directamente en Google Sheets; aqu\u00ed se validan', `<a class="btn" href="${esc(a.sheetUrl)}" target="_blank"><span class="ms">table_view</span>Abrir Google Sheets</a><button class="btn pri" id="aProc"><span class="ms">sync</span>Sincronizar Excel ahora</button>`)}
+  ${a.sinEquipo.length ? `<div class="banner warn glass"><b>${a.sinEquipo.length} ejecutiva(s) con folios recientes sin coordinador</b> en la hoja Equipos: ${a.sinEquipo.map(x => esc(x.ejecutiva) + ' (' + x.folios + ')').join(', ')}. Agr\u00e9galas con el nombre exacto como aparece en el reporte.</div>` : '<div class="banner info glass">Todas las ejecutivas con folios recientes tienen coordinador asignado.</div>'}
+  <div class="grid g2"><div class="glass card"><h2>Usuarios (hoja Usuarios)</h2>${table([{ l: 'Correo', v: u => esc(u['Correo']) }, { l: 'Nombre', v: u => esc(u['Nombre']) }, { l: 'Rol', v: u => pill(u['Rol'], u['Rol'] === 'ADMIN' ? 'info' : 'n') }, { l: 'Activo', v: u => String(u['Activo']).toUpperCase() === 'SI' ? pill('SI', 'ok') : pill('NO', 'bad') }], a.usuarios, { max: 320 })}</div>
+  <div class="glass card"><h2>Equipos (hoja Equipos)</h2>${table([{ l: 'Ejecutiva', v: x => esc(x['Ejecutiva']) }, { l: 'Coordinador', v: x => esc(x['Coordinador (correo)']) }, { l: 'Correo', v: x => esc(x['Correo ejecutiva']) }, { l: 'Activa', v: x => String(x['Activa']).toUpperCase() === 'SI' ? pill('SI', 'ok') : pill('NO', 'bad') }], a.equipos, { max: 320 })}</div></div>
+  <div class="glass card" style="margin-top:16px"><h2>Lecturas del Excel de origen</h2><div class="note">Archivo: <b>${esc(a.origen?.nombre || '\u2014')}</b> \u00b7 ID <code>${esc(a.origen?.id || 'sin configurar (Config \u2192 ARCHIVO_ORIGEN_ID)')}</code> \u00b7 modificado ${esc(a.origen?.modificado || '\u2014')} \u00b7 \u00faltima lectura ${esc(a.origen?.leido || '\u2014')}${a.origen?.error ? ` \u00b7 <span class="down">${esc(a.origen.error)}</span>` : ''}. El activador revisa el archivo cada hora y solo lo procesa si cambi\u00f3; los folios se consolidan sin duplicar y cada cambio de campo queda en la hoja Cambios.</div>${table([{ l: 'ID', n: 1, v: x => x['ID'] }, { l: 'Fecha', v: x => esc(x['Fecha']) }, { l: 'Archivo', v: x => `<b>${esc(x['Archivo'])}</b>` }, { l: 'Periodo', v: x => esc(String(x['Periodo desde']).slice(0, 10) + ' \u2013 ' + String(x['Periodo hasta']).slice(0, 10)) }, { l: 'Registros', n: 1, v: x => fmtN(x['Registros']) }, { l: 'Nuevos', n: 1, v: x => fmtN(x['Nuevos']) }, { l: 'Actualizados', n: 1, v: x => fmtN(x['Actualizados']) }, { l: 'Cambios', n: 1, v: x => fmtN(x['Cambios']) }, { l: 'Meses', v: x => esc(x['Meses afectados']) }, { l: 'Resultado', v: x => String(x['Resultado']).startsWith('OK') ? pill('OK', 'ok') : pill(x['Resultado'], 'bad') }], a.cargas, { max: 320 })}</div>
+  <div class="grid g2" style="margin-top:16px"><div class="glass card"><h2>Par\u00e1metros (hoja Config)</h2><div class="form">${cfgCampos.map(([k, l, op]) => `<label>${l}${op ? `<select data-cfg="${k}">${op.map(o => `<option ${String(c[k]) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>` : `<input type="number" step="any" data-cfg="${k}" value="${esc(c[k])}">`}</label>`).join('')}</div><div class="row" style="margin-top:10px"><button class="btn pri" id="aCfg">Guardar par\u00e1metros</button><span class="muted small">Los cambios de metas se reflejan en la auditor\u00eda al reconstruir los meses.</span></div></div>
+  <div class="glass card"><h2>Mantenimiento</h2><div class="form"><label>Reconstruir cach\u00e9 y auditor\u00eda del mes<select id="aMes">${a.meses.map(m => `<option>${m}</option>`).join('')}</select></label></div><div class="row" style="margin-top:10px"><button class="btn" id="aRec">Reconstruir mes</button></div>
+  <h3 style="margin-top:18px">Cambios recientes entre cargas</h3>${table([{ l: 'Fecha', v: x => esc(x['Fecha']) }, { l: 'Folio', v: x => `<b>${esc(x['Folio'])}</b>` }, { l: 'Campo', v: x => esc(x['Campo']) }, { l: 'Antes', v: x => esc(x['Antes']) }, { l: 'Despu\u00e9s', v: x => esc(x['Despu\u00e9s']) }], a.cambiosRecientes, { click: x => abrirFolio(x['Folio']), max: 300 })}</div></div>`;
+  $('#aProc').onclick = () => sincronizarAhora();
+  $('#aRec').onclick = async () => { const m = $('#aMes').value; overlay('Reconstruyendo ' + m + '\u2026'); try { const r = await call('apiReconstruirMes', m); toast(`${m}: ${r.folios} folios \u00b7 ${r.auditoriasNuevas} auditor\u00edas nuevas`); S.loaded.delete(m); S.folios = S.folios.filter(f => f.mes !== m); S.fMap = new Map(S.folios.map(f => [f.folio, f])); } catch (e) { toast('Error: ' + e.message); } finally { overlay(null); } render(); };
+  $('#aCfg').onclick = async () => { const o = {}; $$('#v-admin [data-cfg]').forEach(i => o[i.dataset.cfg] = i.tagName === 'SELECT' ? i.value : +i.value); try { await call('apiGuardarConfig', o); await recargarSesion(); toast('Par\u00e1metros guardados'); render(); } catch (e) { toast('Error: ' + e.message); } };
+}
+async function recargarSesion() { const s = await call('apiSesion'); S.ses = s; S.cfg = cfgDesdeServidor(s.config); mapearCoordinadores(); prepararFolios(); renderNav(); renderFilters(); }
+
+/* ---------- Metodolog\u00eda ---------- */
+function vMetodo(el) {
+  const c = S.cfg;
+  el.innerHTML = `<div class="glass card doc"><h1>Metodolog\u00eda, fuentes y f\u00f3rmulas</h1>
+  <h2>1. Origen de la informaci\u00f3n</h2><ul><li><b>Disponible en el reporte:</b> folio, ejecutiva, sucursal, zona, \u00e1rea, motivo, estatus, fechas de registro / primer seguimiento / cierre, clasificaci\u00f3n, acciones correctivas, atenci\u00f3n de cl\u00ednica, experto t\u00e9cnico, impacto, causas (90% vac\u00eda) e historial de seguimiento.</li>
+  <li><b>Calculado:</b> primer comentario de persona, tiempos, cumplimientos, qui\u00e9n cerr\u00f3, gestiones, auditor\u00eda, causa ra\u00edz inferida, alertas y bonos.</li>
+  <li><b>Captura nueva (Google Sheets):</b> Usuarios, Equipos (coordinador de cada ejecutiva), Config, Bonos_Captura (monitoreo, auditor\u00eda externa, satisfacci\u00f3n) y Planes.</li></ul>
+  <h2>2. Flujo de datos</h2><p>El Excel de origen (<code>${esc(S.ses.origen?.nombre || 'ARCHIVO_ORIGEN_ID')}</code>) vive en Drive \u2192 un activador horario revisa si cambi\u00f3; si cambi\u00f3, lo convierte a Google Sheets temporal, lo lee, consolida en la hoja <code>Folios</code> por llave <code>Folio|\u00c1rea|Subestudio|Motivo</code> (sin duplicar), registra cada cambio de campo en <code>Cambios</code>, audita los folios cerrados y genera un archivo de cach\u00e9 por mes. El dashboard carga por mes solo los folios que el usuario tiene permiso de ver.</p>
+  <h2>3. Periodos</h2><p>Semanas Salud Digna de <b>s\u00e1bado a viernes</b> (corte el viernes); la semana 1 inicia el primer s\u00e1bado del a\u00f1o, de modo que el 31-oct\u20136-nov-2026 es la S44. Quincenas 1\u201315 y 16\u2013fin de mes. Todo se asigna por <b>Fecha Registro</b>; los cierres del periodo, por Fecha Cierre.</p>
+  <h2>4. Tiempos</h2><table><tr><th>Indicador</th><th>F\u00f3rmula</th></tr>
+  <tr><td><b>Apertura</b> (\u2264${c.slaFsH} h)</td><td>Fecha de primer seguimiento \u2212 Fecha Registro, en horas naturales (ambas traen hora). Si el reporte no trae Fecha de primer seguimiento, se usa el primer comentario de una persona en el historial. En tiempo si \u2264 ${c.slaFsH} h; <b>vencida</b> si se coment\u00f3 despu\u00e9s o si sigue sin comentario pasadas las ${c.slaFsH} h.</td></tr>
+  <tr><td><b>Cierre</b> (\u2264${c.cierreDias} d\u00edas)</td><td>Fecha Cierre \u2212 Fecha Registro, en horas naturales. En tiempo si \u2264 ${c.cierreDias * 24} h (${c.cierreDias} d\u00edas naturales); desde el d\u00eda ${c.cierreDias + 1} es <b>vencido</b>, est\u00e9 cerrado tarde o siga abierto.</td></tr>
+  <tr><td>A\u00fan a tiempo</td><td>Abiertos que todav\u00eda no cumplen el plazo (antes "en plazo").</td></tr>
+  <tr><td>Fuera de la evaluaci\u00f3n</td><td>Cierres autom\u00e1ticos de encuesta digital y folios en el archivo de reasignados (Config \u2192 REASIGNADOS_ID): se cuentan aparte.</td></tr>
+  <tr><td>Sem\u00e1foro de vencidos</td><td>Verde: \u2264${fmtP(c.semVerde, 0)} de vencidos y ning\u00fan pendiente vencido \u00b7 amarillo: \u2264${fmtP(c.semAmarillo, 0)} \u00b7 rojo: m\u00e1s.</td></tr>
+  <tr><td>Desviaci\u00f3n est\u00e1ndar</td><td>Por ejecutiva: de los d\u00edas a cierre de sus folios y de cu\u00e1ntos folios distintos atiende por d\u00eda (d\u00edas con al menos una gesti\u00f3n).</td></tr>
+  <tr><td>Causa probable del vencimiento</td><td>Comentario m\u00e1s reciente del historial que menciona qu\u00e9 se esperaba (gerente/cl\u00ednica, experto t\u00e9cnico, reembolso, resultados/sistema, paciente no localizado, reasignaci\u00f3n).</td></tr>
+  <tr><td>Cerrados en tiempo / fuera de tiempo</td><td>Folios cerrados dentro / fuera de la meta.</td></tr>
+  <tr><td>Pendientes / siguen vencidos</td><td>Abiertos dentro de la meta / abiertos que ya la superaron.</td></tr>
+  <tr><td>% cumplimiento en tiempo</td><td>Cerrados en tiempo \u00f7 (cerrados + siguen vencidos).</td></tr>
+  <tr><td>% de cierre</td><td>Cerrados \u00f7 (folios \u2212 cancelados).</td></tr></table>
+  <h2>5. Desempe\u00f1o general (cambio respecto a la versi\u00f3n anterior)</h2><ul>
+  <li><b>Productividad</b> = ${c.prodVol}% \u00d7 (cierres <u>en tiempo</u> acreditados \u00f7 m\u00e1ximo del equipo) + ${100 - c.prodVol}% \u00d7 (gestionados \u00f7 asignados). <i>Antes contaba todos los cierres; ahora solo los oportunos, para no premiar volumen cerrado fuera de tiempo.</i></li>
+  <li><b>Resoluci\u00f3n</b> = % de cierre.</li><li><b>Oportunidad</b> = promedio de (1er comentario \u226448 h) y (% cumplimiento en tiempo). <i>Antes usaba cierre \u226448 h sin contar los vencidos abiertos en la misma proporci\u00f3n.</i></li>
+  <li>Desempe\u00f1o = (${c.wP}\u00b7P + ${c.wR}\u00b7R + ${c.wO}\u00b7O) \u00f7 ${c.wP + c.wR + c.wO}. M\u00ednimo ${c.minFolios} folios elegibles.</li></ul>
+  <h2>6. Auditor\u00eda de calidad (autom\u00e1tica por reglas, sin IA)</h2><p>Se audita cada folio cerrado con gesti\u00f3n manual. Cada criterio se califica Cumple / Parcial / No cumple y guarda la evidencia textual que lo sustenta (visible en el detalle del folio).</p>
+  <table><tr><th>Criterio</th><th>Regla</th></tr>
+  <tr><td>C1 Claridad</td><td>Texto \u00fatil de las gestiones de personas: \u2265150 caracteres cumple; 60\u2013149 parcial.</td></tr>
+  <tr><td>C2 Motivo</td><td>Todos los motivos tienen \u00e1rea y motivo.</td></tr>
+  <tr><td>C3 Investigaci\u00f3n</td><td>Menciona revisi\u00f3n/validaci\u00f3n/consulta (historial, sistema, cl\u00ednica, experto, RSV, ticket\u2026): 2+ evidencias cumple; 1 parcial.</td></tr>
+  <tr><td>C4 Seguimiento</td><td>Documenta contacto con el paciente (llamada, WhatsApp, correo, buz\u00f3n\u2026) y 2+ gestiones; una de las dos = parcial.</td></tr>
+  <tr><td>C5 Evidencia</td><td>Menciona evidencia, captura, adjunto, comprobante, imagen.</td></tr>
+  <tr><td>C6 Causa ra\u00edz</td><td>Columna Causas = cumple; inferida del texto de la gesti\u00f3n = parcial; ninguna = no cumple ("No determinable").</td></tr>
+  <tr><td>C7 Justificaci\u00f3n</td><td>Las \u00faltimas gestiones explican la resoluci\u00f3n (\u226560 caracteres con t\u00e9rminos de resoluci\u00f3n); texto corto = parcial.</td></tr>
+  <tr><td>C8 Tiempos</td><td>1er comentario \u226448 h y cierre en la meta; uno de los dos = parcial.</td></tr>
+  <tr><td>C9 Cierre</td><td>Todas las clasificaciones PROCEDE/NO PROCEDE; procedente sin acci\u00f3n correctiva = parcial; SIN DEFINIR o vac\u00eda = no cumple.</td></tr></table>
+  <p>Ponderaci\u00f3n: C3, C4 y C7 valen 1.5; el resto 1. Puntaje \u2265${c.aud.adecuada} = adecuada; \u2265${c.aud.parcial} = parcialmente adecuada; menor = inadecuada; sin gestiones de personas = informaci\u00f3n insuficiente.</p>
+  <p><b>Procedencia:</b> se respeta la clasificaci\u00f3n registrada solo si hay justificaci\u00f3n; si falta justificaci\u00f3n o la clasificaci\u00f3n es SIN DEFINIR/vac\u00eda = <b>No determinable por falta de informaci\u00f3n</b>. Nunca se asume.</p>
+  <p><b>Trazabilidad:</b> cada evaluaci\u00f3n se agrega a la hoja Auditoria con fecha, versi\u00f3n de reglas y huella de los datos; si el folio cambia o cambian las reglas, se agrega una evaluaci\u00f3n nueva y las anteriores se conservan.</p>
+  <h2>7. Permisos</h2><ul><li>ADMIN: todos los equipos, comparativos, configuraci\u00f3n y procesamiento.</li><li>COORDINADOR: solo las ejecutivas asignadas a su correo en la hoja Equipos. El servidor filtra los datos antes de enviarlos; el detalle de folio y las capturas validan permiso en cada llamada.</li></ul>
+  <h2>8. Limitaciones</h2><ul><li>El historial solo trae el d\u00eda de cada gesti\u00f3n, no la hora.</li><li>La evidencia se detecta por menciones en el texto; los adjuntos reales no vienen en el reporte.</li><li>La auditor\u00eda por reglas mide la calidad del registro, no la calidad de la llamada (eso lo cubre el monitoreo).</li></ul></div>`;
+}
+
+/* ---------- PDF por ejecutiva y ZIP ---------- */
+async function fichaToPdf(e, r) {
+  await Promise.all([lib('html2canvas'), lib('jspdf')]);
+  Object.values(S.charts).forEach(c => c.destroy()); S.charts = {};
+  const tmp = document.createElement('div'); tmp.className = 'pdfsheet'; document.body.appendChild(tmp);
+  const wasDark = document.body.classList.contains('dark'); document.body.classList.remove('dark');
+  const prev = S.sel.ejec; S.sel.ejec = e; vIndividual(tmp); await sleep(800);
+  tmp.querySelectorAll('.noprint').forEach(x => x.remove());
+  const rect = tmp.getBoundingClientRect();
+  const blocks = [...tmp.children].map(c => { const b = c.getBoundingClientRect(); return { top: b.top - rect.top, h: b.height }; }).filter(b => b.h > 0);
+  const scale = 1.6; const cv = await html2canvas(tmp, { scale, backgroundColor: '#F4F7FE', logging: false, windowWidth: 1140 });
+  tmp.remove(); S.sel.ejec = prev; if (wasDark) document.body.classList.add('dark'); Object.values(S.charts).forEach(c => c.destroy()); S.charts = {};
+  const { jsPDF } = window.jspdf; const pdf = new jsPDF({ unit: 'pt', format: 'letter' });
+  const PW = 612, PH = 792, M = 24, FOOT = 18, cw = PW - 2 * M, k = cw / rect.width; let y = M, page = 1;
+  const footer = () => { pdf.setFontSize(8); pdf.setTextColor(120); pdf.text(`${e} \u00b7 ${r.label} \u00b7 p\u00e1gina ${page}`, M, PH - 10); };
+  const put = (top, h) => { const c = document.createElement('canvas'); c.width = Math.round(rect.width * scale); c.height = Math.max(1, Math.round(h * scale)); c.getContext('2d').drawImage(cv, 0, Math.round(top * scale), c.width, c.height, 0, 0, c.width, c.height); pdf.addImage(c.toDataURL('image/jpeg', 0.88), 'JPEG', M, y, cw, h * k); y += h * k; };
+  const maxH = PH - M - FOOT - M;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]; const gap = i + 1 < blocks.length ? blocks[i + 1].top - (b.top + b.h) : 0;
+    if (y + b.h * k > PH - M - FOOT && y > M) { footer(); pdf.addPage(); page++; y = M; }
+    if (b.h * k <= maxH) put(b.top, b.h); else { let off = 0; while (off < b.h) { const hh = Math.min((PH - M - FOOT - y) / k, b.h - off); put(b.top + off, hh); off += hh; if (off < b.h) { footer(); pdf.addPage(); page++; y = M; } } }
+    y += Math.max(0, gap) * k;
+  }
+  footer(); return pdf;
+}
+async function pdfIndividual() {
+  const r = curRange(), e = S.sel.ejec; if (!e) return;
+  await captura(bonoMonth(r).key).catch(() => { });
+  overlay('Generando PDF\u2026'); try { (await fichaToPdf(e, r)).save(`Reporte_${fname(e)}_${fname(r.label)}.pdf`); } catch (err) { toast('Error al generar PDF: ' + err.message); } finally { overlay(null); render(); }
+}
+async function pdfEquipoZip() {
+  const r = curRange(); const list = team().filter(e => S.folios.some(f => f.owner === e && inR(f.fReg, r)));
+  if (!list.length) return toast('No hay ejecutivas con folios en el periodo');
+  await captura(bonoMonth(r).key).catch(() => { });
+  try { await lib('jszip'); } catch (err) { return toast(err.message); }
+  const zip = new JSZip(); const prevView = S.view;
+  for (let i = 0; i < list.length; i++) {
+    overlay(`Generando reporte ${i + 1} de ${list.length}: ${list[i]}`);
+    try { zip.file(`Reporte_${fname(list[i])}_${fname(r.label)}.pdf`, (await fichaToPdf(list[i], r)).output('blob')); } catch (err) { toast('Error con ' + list[i] + ': ' + err.message); }
+  }
+  overlay('Comprimiendo\u2026');
+  const blob = await zip.generateAsync({ type: 'blob' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Reportes_individuales_${fname(r.label)}.zip`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  overlay(null); toast(`${list.length} PDFs (uno por ejecutiva) en un ZIP`); S.view = prevView; render();
+}
+
+/* ---------- Inicio ---------- */
+function mapearCoordinadores() { S.coordDe = new Map(); for (const c of S.ses.coordinadores) for (const e of c.ejecutivas) S.coordDe.set(e, c.correo); }
+async function init() {
+  try { if (localStorage.getItem('rp2_dark') === '1') document.body.classList.add('dark'); } catch (e) { }
+  try { if (localStorage.getItem('rp2_side') === '0') document.body.classList.add('side-off'); } catch (e) { }
+  try { const fo = localStorage.getItem('rp2_fltopen'); if (fo === '0' || (fo === null && (innerWidth < 1600 || innerHeight < 950))) document.body.classList.add('flt-off'); } catch (e) { }
+  $('#darkIc').textContent = document.body.classList.contains('dark') ? 'dark_mode' : 'light_mode';
+  bindNavbar();
+  overlay('Conectando con Google Sheets\u2026');
+  try {
+    S.ses = await call('apiSesion'); S.cfg = cfgDesdeServidor(S.ses.config); mapearCoordinadores();
+    let fl = null; try { fl = JSON.parse(localStorage.getItem('rp2_flt')); } catch (e) { }
+    S.flt = Object.assign({ from: '', to: '', coord: '', ejec: '', zona: '', suc: '', universo: 'gestion' }, fl || {}, { tipo: 'mes', per: null });
+    if (!UNI_LBL[S.flt.universo]) S.flt.universo = 'gestion';
+    if (S.ses.rol !== 'ADMIN') S.flt.coord = '';
+    renderNav();
+    const ini = S.ses.meses.slice(-Math.max(1, S.cfg.mesesIniciales));
+    overlay(null); await asegurarMeses(ini);
+    renderFilters(); go('dashboard');
+  } catch (e) { overlay(null); document.querySelector('.content').innerHTML = `<div class="glass banner bad">No se pudo iniciar: ${esc(e.message)}</div>`; }
+}
+window.addEventListener('DOMContentLoaded', () => { $('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); }; init(); });
+
+/* ---------- Navbar (b\u00fasqueda, alertas, modo oscuro, men\u00fa de usuario) ---------- */
+let _alertas = [];
+function bindNavbar() {
+  const q = $('#navSearch'); q.onkeydown = ev => { if (ev.key === 'Enter') { const v = q.value.trim(); if (v) abrirFolio(v); } };
+  const tog = (btn, drop) => { $(btn).onclick = ev => { ev.stopPropagation(); const d = $(drop); const on = !d.classList.contains('on'); $$('.drop.on').forEach(x => x.classList.remove('on')); if (on) { if (drop === '#bellDrop') pintarCampana(); d.classList.add('on'); } }; };
+  tog('#bellBtn', '#bellDrop'); tog('#avBtn', '#avDrop');
+  document.addEventListener('click', ev => { if (!ev.target.closest('.drop')) $$('.drop.on').forEach(x => x.classList.remove('on')); });
+}
+function actualizarCampana() {
+  try { const r = curRange(); if (!r || !S.folios.length) return; _alertas = computeAlerts(r, prevPeriod(r)); const n = _alertas.filter(a => a.lvl === 'critica').length; const d = $('#bellDot'); d.style.display = n ? 'grid' : 'none'; d.textContent = n > 99 ? '99+' : n; } catch (e) { console.warn(e); }
+}
+function pintarCampana() {
+  const A = _alertas.filter(a => a.lvl !== 'seguimiento').slice(0, 6);
+  $('#bellDrop').style.width = '420px';
+  $('#bellDrop').innerHTML = `<h4>Alertas del periodo<a href="#" onclick="go('alertas');return false">Ver todas</a></h4>${A.length ? A.map(a => `<div class="it" onclick="go('individual',{ejec:'${esc(a.ejec)}'})"><div class="ic ${a.lvl === 'critica' ? 'bad' : 'warn'}"><span class="ms">${a.lvl === 'critica' ? 'priority_high' : 'warning'}</span></div><div style="min-width:0"><b>${esc(a.ind)}</b><span>${esc(a.ejec)} \u00b7 ${esc(a.dato)}</span></div></div>`).join('') : '<div class="muted">Sin alertas en este periodo.</div>'}`;
+}
+function toggleDark() {
+  document.body.classList.toggle('dark'); const on = document.body.classList.contains('dark');
+  try { localStorage.setItem('rp2_dark', on ? '1' : '0'); } catch (e) { }
+  $('#darkIc').textContent = on ? 'dark_mode' : 'light_mode'; render();
+}
+/** Lee el Excel de origen en ese momento (solo ADMIN) y recarga los datos. */
+async function sincronizarAhora() {
+  if (S.ses.rol !== 'ADMIN') return toast('Solo el administrador puede sincronizar el Excel.');
+  overlay('Leyendo el Excel de origen\u2026');
+  try {
+    const r = await call('apiProcesarAhora'); const x = (r.archivos || [])[0];
+    toast(x ? (x.error ? 'Error: ' + x.error : `${x.archivo}: ${fmtN(x.nuevos)} nuevos \u00b7 ${fmtN(x.actualizados)} actualizados \u00b7 ${fmtN(x.cambios)} cambios`) : (r.estado || r.aviso || 'Listo'), 7000);
+    S.folios = []; S.fMap = new Map(); S.loaded = new Set(); S.plans = null;
+    await recargarSesion();
+    await asegurarMeses(S.ses.meses.slice(-Math.max(1, S.cfg.mesesIniciales))); renderFilters();
+  } catch (e) { toast('Error: ' + e.message, 8000); } finally { overlay(null); }
+  render();
+}
+
+</script>
