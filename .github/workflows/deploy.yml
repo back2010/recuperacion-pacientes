@@ -44,7 +44,10 @@ jobs:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
         run: |
           [ -n "$CLASPRC_JSON" ] || { echo "::error::Falta el secreto CLASPRC_JSON"; exit 1; }
-          echo "$CLASPRC_JSON" > ~/.clasprc.json
+          # Quita saltos de línea que se cuelan al copiar desde la terminal
+          printf '%s' "$CLASPRC_JSON" | tr -d '\r\n' > ~/.clasprc.json
+          node -e 'JSON.parse(require("fs").readFileSync(process.env.HOME+"/.clasprc.json","utf8"))' \
+            || { echo "::error::CLASPRC_JSON no es un JSON válido. Vuelve a copiarlo completo, de { a }."; exit 1; }
 
       - name: Subir código (clasp push)
         run: clasp push -f
